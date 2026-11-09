@@ -1,6 +1,6 @@
 # Architecture
 
-Status: planning baseline, not an implementation report.
+Status: committed direction and current Skirmish implementation, with future choices identified below.
 
 Source: [Game Architecture Options](https://chatgpt.com/c/6ae4ac8c-6904-83eb-a33e-2944fd754973), 30 October 2026. The final Rust/WebAssembly direction supersedes the earlier proposal to start the simulation in TypeScript and migrate later. Supporting tools below reflect the latest recommended baseline; preferences and unresolved choices are identified separately.
 
@@ -25,7 +25,7 @@ Source: [Game Architecture Options](https://chatgpt.com/c/6ae4ac8c-6904-83eb-a33
 | Menus and doctrine editor | Svelte |
 | Builds | Vite and Cargo |
 | Simulation execution | One dedicated Web Worker, initially single-threaded |
-| Local persistence | IndexedDB and exportable save/scenario files |
+| Local persistence | IndexedDB and exportable save/scenario files are planned, not implemented |
 | Verification | Native Rust simulation tests and browser integration tests |
 
 Static hosting is the intended deployment model. Cloudflare Pages is the preferred option discussed; GitHub Pages or another static host remains possible. The initial combat simulation runs on the visitor's device and does not require a simulation server or account system. First-load size and initialization time matter because opening the link is the entry experience.
@@ -61,15 +61,21 @@ Keep perception, doctrine evaluation, and intentions separate from the movement 
 - Exchange bulk commands and compact snapshots across the Rust/JavaScript and Worker boundaries. Avoid per-entity calls each frame.
 - Start with ordinary messages and compact buffers. Shared memory and additional simulation threads are later options.
 
-## Proposed organization
+## Current implementation
 
-Keep one repository with a browser application, a pure Rust simulation crate, a WASM adapter, and a native benchmark runner. Assets and scenarios remain separate from engine code. Exact folder names and public API signatures are not yet fixed.
+- `crates/sim-core` is browser-independent Rust. It owns scenario validation, observations, doctrine decisions, movement, combat, seeded randomness, and battle results. Decisions produce intentions that movement and combat execute.
+- `crates/sim-wasm` adapts that core for the browser. Catalog, scenario validation, battle creation, and snapshots cross the WASM boundary as bulk JSON strings; stepping advances the battle in batches.
+- `apps/web` contains the Svelte shell, PixiJS WebGL battlefield, one Worker, and the typed Worker command and reply contract. The Worker owns the WASM battle and sends snapshots to the UI. The renderer interpolates presentation only; it does not resolve gameplay.
+- Simulation steps are fixed at 20 Hz. Sight refreshes each step; doctrine decisions normally run at 2 Hz and can be requested earlier by relevant state changes. The Worker publishes snapshots at approximately 10 Hz and caps catch-up at five steps after a stall. Rendering runs independently of these rates.
+- Native Rust tests and Playwright tests for the real browser Worker/WASM path are present. The current browser target is desktop Chromium. The game has no backend or persistence implementation.
+
+The current implementation uses a fixed map and explicit Rust structures. A native benchmark runner, persistence, and a generalized scenario pipeline remain future work.
 
 ## Open choices and deferred work
 
-- Lightweight Rust ECS versus explicit packed component stores; no ECS library has been selected.
+- Whether future scale warrants a Rust ECS or packed component stores; no ECS library has been selected.
 - Final doctrine evaluation algorithm, rule conflicts, inheritance, and editor detail.
-- Exact timestep, snapshot format, update rates, and persistence schema.
+- Future timestep, snapshot representation, update rates, and persistence schema beyond the current slice.
 - Chunk layout and optional elevation/material fields; the MVP needs only flat terrain, obstacles, and cover.
 - Replay determinism, recording format, and seeking.
 - Hosting provider, dependency versions, and supported browser/device matrix.

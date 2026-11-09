@@ -1,0 +1,27 @@
+{
+  "name": "2nd-hand-combat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": "^20.19.0 || >=22.12.0" },
+  "scripts": {
+    "dev": "node scripts/build-wasm.mjs --dev && vite --config apps/web/vite.config.ts",
+    "build": "node scripts/build-wasm.mjs && vite build --config apps/web/vite.config.ts",
+    "preview": "vite preview --config apps/web/vite.config.ts --host 127.0.0.1",
+    "check": "svelte-check --workspace apps/web --tsconfig ./tsconfig.json && tsc -p apps/web/tsconfig.worker.json",
+    "test:rust": "node scripts/tool.mjs cargo test --workspace",
+    "lint:rust": "node scripts/tool.mjs cargo clippy --workspace --all-targets -- -D warnings",
+    "fmt:check": "node scripts/tool.mjs cargo fmt --all -- --check",
+    "test:e2e": "npm run build && playwright test",
+    "test:browser": "playwright test"
+  },
+  "dependencies": { "pixi.js": "8.22.0", "svelte": "5.57.3" },
+  "devDependencies": {
+    "@playwright/test": "1.65.0",
+    "@sveltejs/vite-plugin-svelte": "7.3.1",
+    "@types/node": "^22.0.0",
+    "svelte-check": "4.7.8",
+    "typescript": "5.9.3",
+    "vite": "8.3.6"
+  }
+}

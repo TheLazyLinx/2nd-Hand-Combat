@@ -1,6 +1,6 @@
 # Scope
 
-Status: agreed product direction with a deliberately smaller first release.
+Status: product direction, with an initial Skirmish slice implemented and broader first-playable work remaining.
 
 Source: [Game Architecture Options](https://chatgpt.com/c/6ae4ac8c-6904-83eb-a33e-2944fd754973), 30 October 2026. This document separates the game's identity from features that remain outside the MVP.
 
@@ -10,7 +10,7 @@ Source: [Game Architecture Options](https://chatgpt.com/c/6ae4ac8c-6904-83eb-a33
 
 The player primarily configures how units behave, then watches autonomous combat. Doctrine means the rules and parameters that guide that behavior: when to fire, when to move or withdraw, and how to use cover.
 
-The intended presentation resembles a straightforward Newgrounds-style browser game: open a link, reach a splash screen with Play and Settings, and enter the game.
+The intended presentation is a straightforward browser game: open a link, reach a splash screen, and enter a mode. The current shell offers Skirmish and Options; Campaign and Puzzles are unavailable.
 
 The central gameplay test is whether changing doctrine produces visible, understandable changes in unit behavior.
 
@@ -23,19 +23,19 @@ The central gameplay test is whether changing doctrine produces visible, underst
 - Keep decisions separate from movement and combat execution so future control methods can be added.
 - Allow customization later without implementing a general customization framework in the MVP.
 
-The exact sliders, trigger conditions, thresholds, and configuration hierarchy are not settled.
+The current slice offers per-soldier engagement distance and fallback-health controls. Broader presets, triggers, and configuration hierarchy remain open.
 
 ## Intended modes
 
 | Mode | Intended role | Release status |
 | --- | --- | --- |
-| Sandbox | Configure a battle and experiment with doctrine | First playable mode |
+| Skirmish | Configure a sandbox battle and experiment with doctrine | Initial slice implemented |
 | Puzzles | Solve constrained combat scenarios through behavior configuration | Future |
 | Campaign | Earn currency and spend it on soldiers and weapons across battles | Future |
 
 All modes should use the same combat simulation. Restrictions, scenario construction, and progression distinguish them.
 
-Random maps are part of the intended direction. The initial generator can be small and simple. Custom maps, real-world map services, and image-derived maps are separate future possibilities.
+Random maps are part of the intended direction; the current slice uses one fixed map. A future initial generator can be small and simple. Custom maps, real-world map services, and image-derived maps are separate future possibilities.
 
 ## Player control
 
@@ -53,7 +53,7 @@ Large battles are a long-term ambition, not a requirement to build every underly
 
 ## Unresolved product questions
 
-- Exact initial weapons, doctrine controls, and victory rules.
+- Weapon variety, additional doctrine controls, and future victory rules beyond the current slice.
 - How much individual configuration is necessary in the first release.
 - Whether later modes permit live orders or direct control.
 - Final campaign economy, puzzle structure, and content progression.
