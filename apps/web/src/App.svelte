@@ -6,7 +6,7 @@
   import DoctrineEditor from './components/DoctrineEditor.svelte';
   import UnitPicker from './components/UnitPicker.svelte';
   import Results from './components/Results.svelte';
-  import type { BattleResult, Catalog, Scenario, Snapshot, UnitPlacement, WorkerReply } from './lib/types';
+  import type { BattleResult, Catalog, Doctrine, Scenario, Snapshot, UnitPlacement, WorkerReply } from './lib/types';
 
   let screen: 'home' | 'options' | 'skirmish' = 'home';
   let catalog: Catalog | null = null;
@@ -22,6 +22,11 @@
   let busy = false;
   let deployX = 0;
   let deployY = 0;
+  let mapId = '';
+  let startingMapId = '';
+  let inspectX = 0;
+  let inspectY = 0;
+  let terrainOverlay = true;
   let showHp = true;
   let fullscreen = false;
   let host: HTMLElement;
@@ -31,11 +36,15 @@
   const names = ['North', 'South'];
   const copy = <T,>(value: T): T => structuredClone(value);
   $: selectedUnit = scenario?.units.find(unit => unit.id === selected) ?? null;
-  $: if (battlefield && scenario) battlefield.update(scenario, snapshot, selected, showHp, catalog?.unit.maxHp ?? 100, phase === 'running');
+  $: mapIndex = catalog?.maps.findIndex(map => map.id === mapId) ?? -1;
+  $: inspected = scenario && catalog && mapIndex >= 0 && Number.isInteger(inspectX) && Number.isInteger(inspectY) && inspectX >= 0 && inspectY >= 0 && inspectX < scenario.map.width && inspectY < scenario.map.height ? catalog.terrainCells[mapIndex]?.[inspectY * scenario.map.width + inspectX] : null;
+  $: selectedState = snapshot?.units.find(unit => unit.id === selected) ?? null;
+  $: if (battlefield && scenario && catalog) battlefield.update(scenario, snapshot, selected, showHp, catalog.unit.maxHp, phase === 'running', catalog, terrainOverlay);
 
   function receive(message: WorkerReply) {
     if (message.type === 'ready') {
       catalog = message.catalog;
+      mapId = catalog.maps[0]?.id ?? '';
       scenario = { map: copy(catalog.map), seed: catalog.defaultSeed, factions: [0, 1], units: [], timeLimit: catalog.defaultTimeLimit };
       snapshot = null; result = null; selected = null; placement = null; phase = 'setup'; error = '';
     } else if (message.type === 'snapshot') {
@@ -53,7 +62,7 @@
     await tick();
     if (current !== generation || !host) return;
     try {
-      battlefield = new Battlefield(host, mapClick);
+      battlefield = new Battlefield(host, mapClick, (x, y) => { inspectX = x; inspectY = y; });
       await battlefield.init();
       if (current !== generation) return;
       client = new BattleClient(receive);
@@ -66,7 +75,11 @@
   }
   function back() { closeBattle(); screen = 'home'; }
   async function mapClick(x: number, y: number) {
-    if (!scenario || !catalog || phase !== 'setup' || busy) return;
+    if (!scenario || !catalog || busy) return;
+    if (phase !== 'setup') {
+      const nearest = snapshot?.units.find(unit => Math.hypot(unit.position.x - x, unit.position.y - y) < 0.65);
+      selected = nearest?.id ?? null; return;
+    }
     if (placement !== null) {
       const faction = placement;
       const candidate = copy(scenario);
@@ -88,8 +101,14 @@
     if (!scenario || phase !== 'setup' || busy) return;
     scenario = {...scenario, units: scenario.units.map(unit => unit.id === id ? {...unit, ...patch} : unit)};
   }
-  function doctrine(field: 'engagementDistance' | 'fallbackHp', value: number) {
+  function doctrine(field: keyof Doctrine, value: Doctrine[keyof Doctrine]) {
     if (selectedUnit) editUnit(selectedUnit.id, {doctrine: {...selectedUnit.doctrine, [field]: value}});
+  }
+  function changeMap(id: string) {
+    const preset = catalog?.maps.find(map => map.id === id);
+    if (!preset || !scenario || phase !== 'setup' || busy) return;
+    mapId = id; scenario = {...scenario, map: copy(preset.map), units: []};
+    selected = null; placement = null; inspectX = 0; inspectY = 0; error = '';
   }
   function removeUnit() {
     if (!scenario || selected === null || busy) return;
@@ -102,7 +121,7 @@
       const validation = await client.validate(candidate, true);
       if (token !== generation) return;
       if (!validation.valid) { error = validation.issues.map(issue => issue.message).join(' '); return; }
-      starting = copy(candidate); snapshot = null; result = null; selected = null; placement = null;
+      starting = copy(candidate); startingMapId = mapId; snapshot = null; result = null; selected = null; placement = null;
       client.start(candidate);
       if (document.hidden) { client.pause(); phase = 'paused'; } else phase = 'running';
     } catch (e) { if (token === generation) error = e instanceof Error ? e.message : String(e); }
@@ -110,7 +129,7 @@
   }
   function reset() {
     if (!client || !starting) return;
-    client.reset(); scenario = copy(starting); snapshot = null; result = null; selected = null; placement = null; error = ''; phase = 'setup';
+    client.reset(); scenario = copy(starting); mapId = startingMapId; snapshot = null; result = null; selected = null; placement = null; error = ''; phase = 'setup';
   }
   function pause() { if (phase === 'running') { client?.pause(); phase = 'paused'; } }
   function resume() { if (phase === 'paused') { client?.resume(); phase = 'running'; } }
@@ -145,7 +164,19 @@
     {#if phase === 'loading' || phase === 'error'}<div class="loading"><p class="eyebrow">FIELD OPERATIONS</p><h2>{phase === 'loading' ? 'Preparing the field…' : 'Unable to prepare the field'}</h2>{#if error}<p role="alert">{error}</p><button onclick={openSkirmish}>Retry</button>{/if}<button class="text-button" onclick={back}>Back to menu</button></div>{/if}
     <div class:hidden={phase === 'loading' || phase === 'error'} class="battle-layout">
       <section class="field-column"><div class="field-heading"><div><p class="eyebrow">OPERATION / SKIRMISH</p><h1>Battlefield<span class="period">.</span></h1></div><div class="field-meta">32 × 20 <span> / </span> SEED {scenario?.seed}</div></div>
-        <div class="map-frame"><div class="map-top"><span>TACTICAL MAP</span><span>{phase === 'setup' ? 'DEPLOYMENT' : 'LIVE VIEW'} / {snapshot ? `${snapshot.elapsed.toFixed(1)}s` : '00:00'}</span></div><div class="battlefield" data-testid="battlefield" bind:this={host}></div><div class="map-bottom"><span><i class="dot north"></i>NORTH</span><span><i class="dot south"></i>SOUTH</span><span><i class="square cover"></i>COVER</span><span><i class="square wall"></i>WALL</span><span class="map-hint">{placement !== null ? `CLICK THE MAP TO PLACE ${names[placement].toUpperCase()} INFANTRY · ESC TO CANCEL` : phase === 'setup' ? 'SELECT A SOLDIER TO EDIT DOCTRINE' : 'AUTONOMOUS COMBAT'}</span></div></div>
+        <div class="map-frame"><div class="map-top"><span>TACTICAL MAP</span><span>{phase === 'setup' ? 'DEPLOYMENT' : 'LIVE VIEW'} / {snapshot ? `${snapshot.elapsed.toFixed(1)}s` : '00:00'}</span></div><div class="battlefield" data-testid="battlefield" bind:this={host}></div><div class="map-bottom"><span><i class="dot north"></i>NORTH</span><span><i class="dot south"></i>SOUTH</span><span><i class="square cover"></i>LOW OBSTACLE</span><span><i class="square wall"></i>FULL OBSTACLE</span><span class="map-hint">{placement !== null ? `CLICK THE MAP TO PLACE ${names[placement].toUpperCase()} INFANTRY · ESC TO CANCEL` : phase === 'setup' ? 'SELECT A SOLDIER TO EDIT DOCTRINE' : 'AUTONOMOUS COMBAT'}</span></div></div>
+        {#if catalog && scenario}
+          <div class="terrain-controls">
+            <label>Map <select data-testid="map-preset" value={mapId} disabled={phase !== 'setup' || busy} onchange={(e) => changeMap(e.currentTarget.value)}>{#each catalog.maps as map}<option value={map.id}>{map.name}</option>{/each}</select></label>
+            <span>{catalog.maps[mapIndex]?.description}</span><small>Changing the map clears placed soldiers.</small>
+            <label><input type="checkbox" bind:checked={terrainOverlay}/> Terrain grid and elevation shading</label>
+          </div>
+          <div class="terrain-inspector" aria-label="Terrain inspector">
+            <strong>Inspect terrain</strong><label>Column <input aria-label="Inspect column" type="number" min="0" max={scenario.map.width - 1} bind:value={inspectX}/></label><label>Row <input aria-label="Inspect row" type="number" min="0" max={scenario.map.height - 1} bind:value={inspectY}/></label>
+            {#if inspected}<span data-testid="terrain-readout">{catalog.surfaces.find(surface => surface.id === inspected.surface)?.name}: elevation {inspected.elevation.toFixed(1)} m | movement x{inspected.movementMultiplier.toFixed(2)} | {inspected.traversable ? 'traversable' : 'blocked'}</span>{:else}<span>Choose a valid cell.</span>{/if}
+          </div>
+          <div class="terrain-legend" aria-label="Terrain legend">{#each catalog.surfaces as surface}<span><i style={`background:#${surface.color.toString(16).padStart(6, '0')}`}></i>{surface.name}</span>{/each}</div>
+        {/if}
         {#if placement !== null}<div class="coordinate-entry"><span>Or enter a grid position:</span><label>Column <input type="number" min="0" max={(scenario?.map.width ?? 1) - 1} bind:value={deployX}/></label><label>Row <input type="number" min="0" max={(scenario?.map.height ?? 1) - 1} bind:value={deployY}/></label><button disabled={busy || !Number.isInteger(deployX) || !Number.isInteger(deployY) || deployX < 0 || deployY < 0 || deployX >= (scenario?.map.width ?? 0) || deployY >= (scenario?.map.height ?? 0)} onclick={() => mapClick(deployX + 0.5, deployY + 0.5)}>Place soldier</button></div>{/if}
         {#if error}<p class="error" role="alert">{error}</p>{/if}
         <div class="action-bar"><div><strong>{phase === 'setup' ? 'Prepare your forces' : phase === 'finished' ? 'Battle complete' : phase === 'paused' ? 'Battle paused' : 'Battle in progress'}</strong><small>{phase === 'setup' ? 'Place at least one soldier on each side.' : phase === 'paused' ? 'Resume when you are ready.' : 'Doctrine stays fixed during battle.'}</small></div><div class="actions">{#if phase === 'setup'}<button class="primary" data-testid="start-battle" disabled={busy || !scenario?.units.some(u => u.faction === 0) || !scenario?.units.some(u => u.faction === 1)} onclick={start}>Start battle <span>&rarr;</span></button>{:else if phase === 'running'}<button class="primary" data-testid="pause-battle" onclick={pause}>Pause battle</button>{:else if phase === 'paused'}<button class="primary" data-testid="resume-battle" onclick={resume}>Resume battle</button>{/if}{#if starting && phase !== 'setup'}<button data-testid="reset-battle" onclick={reset}>Reset</button>{/if}</div></div>
@@ -160,6 +191,8 @@
         {/each}
         {#if selectedUnit && phase === 'setup'}
           <DoctrineEditor unit={selectedUnit} {busy} onClose={() => selected = null} onChange={doctrine} onRemove={removeUnit} />
+        {:else if selectedUnit && selectedState}
+          <section class="editor" data-testid="unit-terrain-status"><h3>Infantry #{selectedUnit.id}</h3><p>{selectedState.terrain.surface} | elevation {selectedState.terrain.elevation.toFixed(1)} m | movement x{selectedState.terrain.movementMultiplier.toFixed(2)}</p><p>{selectedState.terrain.revealed ? 'Revealed' : 'Not revealed'} | {selectedState.terrain.protection === null ? 'No current target' : `${Math.round(selectedState.terrain.protection * 100)}% directional protection against target #${selectedState.targetId}`}</p></section>
         {/if}
       </aside>
     </div>

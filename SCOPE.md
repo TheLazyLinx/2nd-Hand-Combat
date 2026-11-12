@@ -23,7 +23,7 @@ The central gameplay test is whether changing doctrine produces visible, underst
 - Keep decisions separate from movement and combat execution so future control methods can be added.
 - Allow customization later without implementing a general customization framework in the MVP.
 
-The current slice offers per-soldier engagement distance and fallback-health controls. Broader presets, triggers, and configuration hierarchy remain open.
+The current slice offers per-soldier engagement distance, fallback health, position preference, and route preference. Broader doctrine presets, triggers, and configuration hierarchy remain open.
 
 ## Intended modes
 
@@ -35,7 +35,7 @@ The current slice offers per-soldier engagement distance and fallback-health con
 
 All modes should use the same combat simulation. Restrictions, scenario construction, and progression distinguish them.
 
-Random maps are part of the intended direction; the current slice uses one fixed map. A future initial generator can be small and simple. Custom maps, real-world map services, and image-derived maps are separate future possibilities.
+Random maps are part of the intended direction; the current slice uses three handcrafted terrain presets. A future initial generator can be small and simple. Custom maps, real-world map services, and image-derived maps are separate future possibilities.
 
 ## Player control
 

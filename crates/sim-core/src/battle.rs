@@ -1,6 +1,6 @@
 use crate::{
     decisions,
-    perception::{self, Memory, Unit},
+    perception::{self, Memory, ThreatMemory, Unit},
     types::*,
     validation::validate_scenario,
 };
@@ -26,6 +26,11 @@ impl Battle {
         let mut units: Vec<_> = scenario.units.iter().cloned().map(Unit::new).collect();
         units.sort_by_key(|u| u.placement.id);
         for u in &mut units {
+            u.movement_multiplier = crate::definitions::surface_definition(crate::map::surface(
+                &scenario.map,
+                u.position,
+            ))
+            .movement_multiplier;
             if !scenario.map.patrol.is_empty() {
                 u.patrol_index = (u.placement.id as usize) % scenario.map.patrol.len();
             }
@@ -47,9 +52,9 @@ impl Battle {
         let observations: Vec<_> = (0..self.units.len())
             .map(|i| {
                 if self.units[i].hp > 0.0 {
-                    perception::observe(&self.units, &self.scenario.map, i)
+                    perception::observe_all(&self.units, &self.scenario.map, i, self.tick)
                 } else {
-                    None
+                    Vec::new()
                 }
             })
             .collect();
@@ -58,7 +63,34 @@ impl Battle {
                 continue;
             }
             let previous_target = self.units[i].target;
-            if let Some(j) = seen {
+            // Unit storage is ID-sorted, so the known-threat order remains stable as distances change.
+            let contacts: Vec<_> = self
+                .units
+                .iter()
+                .enumerate()
+                .filter(|(j, _)| seen.contains(j))
+                .map(|(_, u)| (u.placement.id, u.position))
+                .collect();
+            let me = &mut self.units[i];
+            me.threat_memories
+                .retain(|memory| self.tick - memory.tick <= 200);
+            for (id, position) in contacts {
+                if let Some(memory) = me.threat_memories.iter_mut().find(|memory| memory.id == id) {
+                    memory.position = position;
+                    memory.tick = self.tick;
+                } else {
+                    me.threat_memories.push(ThreatMemory {
+                        id,
+                        position,
+                        tick: self.tick,
+                    });
+                }
+            }
+            me.threat_memories.sort_by_key(|memory| memory.id);
+            me.known_threats.clear();
+            me.known_threats
+                .extend(me.threat_memories.iter().map(|memory| memory.position));
+            if let Some(j) = seen.first() {
                 let position = self.units[*j].position;
                 let id = self.units[*j].placement.id;
                 self.units[i].target = Some(id);
@@ -72,6 +104,9 @@ impl Battle {
                 });
             } else {
                 self.units[i].target = None;
+                if previous_target.is_some() {
+                    self.units[i].needs_decision = true;
+                }
                 if self.units[i]
                     .memory
                     .as_ref()
@@ -94,7 +129,7 @@ impl Battle {
                     .position(|f| *f == self.units[i].placement.faction)
                     .unwrap_or(0);
                 let unit = &self.units[i];
-                let visible_enemy = observations[i].map(|j| self.units[j].position);
+                let visible_enemy = observations[i].first().map(|j| self.units[*j].position);
                 let allies = self
                     .units
                     .iter()
@@ -109,6 +144,10 @@ impl Battle {
                     &decisions::DecisionInput {
                         unit,
                         visible_enemy,
+                        visible_enemy_revealed: observations[i]
+                            .first()
+                            .is_some_and(|j| self.tick < self.units[*j].revealed_until),
+                        tick: self.tick,
                         allies,
                     },
                     &self.scenario.map,
@@ -117,12 +156,16 @@ impl Battle {
             })
             .collect();
         for (u, decision) in self.units.iter_mut().zip(decisions) {
-            if let Some((behavior, goal, fallback, patrol)) = decision {
+            if let Some(decision) = decision {
+                let fallback = decision.fallback_goal;
                 let old_fallback = u.fallback_goal;
-                u.behavior = behavior;
-                u.goal = goal;
+                u.behavior = decision.behavior;
+                u.goal = decision.goal;
                 u.fallback_goal = fallback;
-                u.patrol_index = patrol;
+                u.patrol_index = decision.patrol_index;
+                if let Some(route) = decision.route {
+                    u.route = route;
+                }
                 u.needs_decision = false;
                 u.fallback_threat = if fallback.is_some() && fallback == old_fallback {
                     u.fallback_threat
@@ -133,8 +176,13 @@ impl Battle {
                 };
             }
         }
-        crate::movement::execute(&mut self.units, &self.scenario.map);
-        crate::combat::execute(&mut self.units, &self.scenario.map, &mut self.rng);
+        crate::movement::execute(&mut self.units, &self.scenario.map, self.tick);
+        crate::combat::execute(
+            &mut self.units,
+            &self.scenario.map,
+            &mut self.rng,
+            self.tick,
+        );
         self.result = crate::results::evaluate(&self.scenario, &self.units, self.tick);
     }
     pub fn snapshot(&self) -> Snapshot {
@@ -152,6 +200,26 @@ impl Battle {
                     behavior: u.behavior.clone(),
                     target_id: u.target,
                     shots_fired: u.shots,
+                    terrain: TerrainStatus {
+                        surface: crate::map::surface(&self.scenario.map, u.position),
+                        elevation: crate::map::ground_height(&self.scenario.map, u.position),
+                        movement_multiplier: u.movement_multiplier,
+                        revealed: self.tick < u.revealed_until,
+                        protection: u
+                            .target
+                            .and_then(|id| {
+                                self.units
+                                    .iter()
+                                    .find(|other| other.placement.id == id && other.hp > 0.0)
+                            })
+                            .map(|other| {
+                                1.0 - crate::map::shot_fraction(
+                                    &self.scenario.map,
+                                    other.position,
+                                    u.position,
+                                )
+                            }),
+                    },
                 })
                 .collect(),
             result: self.result.clone(),
@@ -162,13 +230,16 @@ impl Battle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog;
     #[test]
     fn last_seen_is_individual_and_expires_without_hidden_updates() {
-        let mut map = catalog().map;
-        map.walls = vec![Point { x: 5.0, y: 5.0 }];
-        map.cover.clear();
-        map.patrol.clear();
+        let mut map = ArenaMap::flat(32, 20);
+        map.obstacles.push(Obstacle {
+            x: 5,
+            y: 5,
+            width: 1,
+            height: 1,
+            height_metres: 2.4,
+        });
         let unit = |id, faction, position| UnitPlacement {
             id,
             faction,
@@ -177,6 +248,8 @@ mod tests {
             doctrine: Doctrine {
                 engagement_distance: 8.0,
                 fallback_hp: 0.0,
+                position_preference: PositionPreference::Balanced,
+                route_preference: RoutePreference::Fastest,
             },
         };
         let scenario = Scenario {
@@ -207,9 +280,7 @@ mod tests {
         assert_eq!(battle.snapshot().units[0].behavior, Behavior::Searching);
     }
     fn test_battle() -> Battle {
-        let mut map = catalog().map;
-        map.walls.clear();
-        map.cover.clear();
+        let mut map = ArenaMap::flat(32, 20);
         map.patrol = vec![Point { x: 12.5, y: 10.5 }];
         let unit = |id, faction, position| UnitPlacement {
             id,
@@ -219,6 +290,8 @@ mod tests {
             doctrine: Doctrine {
                 engagement_distance: 8.0,
                 fallback_hp: 0.0,
+                position_preference: PositionPreference::Balanced,
+                route_preference: RoutePreference::Fastest,
             },
         };
         Battle::new(Scenario {
@@ -282,5 +355,54 @@ mod tests {
         assert_eq!(result.reason, "simultaneous_elimination");
         assert_eq!(result.winner, None);
         assert_eq!(result.factions.iter().map(|f| f.casualties).sum::<u32>(), 2);
+    }
+    #[test]
+    fn all_seen_threats_retain_individual_last_positions_until_expiry() {
+        let mut battle = test_battle();
+        battle.units[0].position = Point { x: 2.5, y: 5.5 };
+        battle.units[1].position = Point { x: 6.5, y: 5.5 };
+        let mut third = battle.units[1].placement.clone();
+        third.id = 3;
+        third.position = Point { x: 7.5, y: 7.5 };
+        battle.units.push(Unit::new(third));
+        // Keep units stationary so only observation changes drive this regression.
+        for u in &mut battle.units {
+            u.placement.doctrine.fallback_hp = 100.0;
+        }
+        battle.step();
+        assert_eq!(battle.units[0].threat_memories.len(), 2);
+        let last_seen = battle.units[0]
+            .threat_memories
+            .iter()
+            .find(|m| m.id == 2)
+            .unwrap()
+            .position;
+        battle.scenario.map.obstacles.push(Obstacle {
+            x: 8,
+            y: 5,
+            width: 1,
+            height: 1,
+            height_metres: 2.4,
+        });
+        battle.units[1].position = Point { x: 9.5, y: 5.5 };
+        battle.units[0].position = Point { x: 2.5, y: 5.5 };
+        battle.units[2].position = Point { x: 7.5, y: 7.5 };
+        battle.step();
+        assert_eq!(battle.units[0].target, Some(3));
+        assert_eq!(battle.units[0].known_threats.len(), 2);
+        assert_eq!(
+            battle.units[0]
+                .threat_memories
+                .iter()
+                .find(|m| m.id == 2)
+                .unwrap()
+                .position,
+            last_seen
+        );
+        // Advancing time while the enemy remains hidden must expire that contact.
+        battle.tick = 202;
+        battle.units[0].position = Point { x: 2.5, y: 5.5 };
+        battle.step();
+        assert!(battle.units[0].threat_memories.iter().all(|m| m.id != 2));
     }
 }

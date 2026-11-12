@@ -17,20 +17,41 @@ pub fn validate_scenario(s: &Scenario, for_start: bool) -> Validation {
     if !s.time_limit.is_finite() || !(1.0..=3600.0).contains(&s.time_limit) {
         add("Time limit must be between 1 and 3600 seconds.", None);
     }
-    for p in s.map.walls.iter().chain(s.map.cover.iter()) {
-        if !p.x.is_finite()
-            || !p.y.is_finite()
-            || p.x.fract() != 0.0
-            || p.y.fract() != 0.0
-            || p.x < 0.0
-            || p.y < 0.0
-            || p.x >= s.map.width as f64
-            || p.y >= s.map.height as f64
-        {
+    let dimensions_valid =
+        s.map.width > 0 && s.map.height > 0 && s.map.width <= 128 && s.map.height <= 128;
+    let terrain_valid = dimensions_valid
+        && s.map.surfaces.len() == s.map.width as usize * s.map.height as usize
+        && s.map.elevations.len() == (s.map.width as usize + 1) * (s.map.height as usize + 1)
+        && s.map
+            .elevations
+            .iter()
+            .all(|h| h.is_finite() && h.abs() <= 100.0);
+    if !terrain_valid {
+        add("Terrain arrays must match map dimensions and contain finite elevations between -100 and 100.", None);
+    }
+    for (i, o) in s.map.obstacles.iter().enumerate() {
+        let valid = o.width > 0
+            && o.height > 0
+            && o.x.checked_add(o.width).is_some_and(|x| x <= s.map.width)
+            && o.y.checked_add(o.height).is_some_and(|y| y <= s.map.height)
+            && o.height_metres.is_finite()
+            && o.height_metres > 0.0
+            && o.height_metres <= 100.0;
+        if !valid {
             add(
-                "Terrain cells must be integer positions inside the map.",
+                "Obstacles must have positive dimensions and height and fit inside the map.",
                 None,
             );
+        }
+        if valid
+            && s.map.obstacles[..i].iter().any(|p| {
+                p.x < o.x + o.width
+                    && o.x < p.x.saturating_add(p.width)
+                    && p.y < o.y + o.height
+                    && o.y < p.y.saturating_add(p.height)
+            })
+        {
+            add("Obstacles must not overlap.", None);
         }
     }
     for p in &s.map.patrol {
@@ -84,5 +105,41 @@ pub fn validate_scenario(s: &Scenario, for_start: bool) -> Validation {
     Validation {
         valid: issues.is_empty(),
         issues,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn scenario() -> Scenario {
+        Scenario {
+            map: crate::catalog().map,
+            seed: 1,
+            factions: vec![1, 2],
+            units: vec![],
+            time_limit: 180.0,
+        }
+    }
+    #[test]
+    fn rejects_malformed_terrain_arrays_without_accessing_them() {
+        let mut s = scenario();
+        s.map.elevations.clear();
+        s.map.surfaces.clear();
+        assert!(!validate_scenario(&s, false).valid);
+    }
+    #[test]
+    fn rejects_overlapping_and_out_of_bounds_obstacles() {
+        let mut s = scenario();
+        s.map.obstacles.push(s.map.obstacles[0].clone());
+        assert!(!validate_scenario(&s, false).valid);
+        s.map.obstacles.clear();
+        s.map.obstacles.push(Obstacle {
+            x: u32::MAX,
+            y: 0,
+            width: 2,
+            height: 1,
+            height_metres: 1.0,
+        });
+        assert!(!validate_scenario(&s, false).valid);
     }
 }

@@ -8,18 +8,19 @@ Demonstrate that changing doctrine produces visible, understandable differences 
 
 ## Implemented Skirmish slice
 
-- Place up to eight infantry on each of two factions on a fixed 32 × 20 map with walls and cover. Each soldier uses the same rifle.
-- Configure engagement distance from 2 to 12 and fallback health from 0 to 100 per soldier. Defaults are 8 and 30%. Doctrine is fixed during battle.
+- Place up to eight infantry on each of two factions on one of three handcrafted 32 × 20 maps: Training Ground, Ridge and Hollow, and Woodland Crossing. Each soldier uses the same rifle.
+- Configure engagement distance from 2 to 12 and fallback health from 0 to 100 per soldier. Defaults are 8 and 30%. Choose Balanced, Cover, or Concealment positioning and Fastest or Protected routes; defaults are Balanced and Fastest. Doctrine is fixed during battle.
 - Start with at least one soldier on each side; watch autonomous movement, targeting, fire, damage, and casualties. Pause, resume, or reset to the starting setup. Results report the winner or draw, reason, elapsed time, survivors, and casualties. The default time limit is 180 seconds.
-- Each soldier sees enemies within 14 world units with clear line of sight and remembers a last sighting for approximately 10 seconds. Soldiers do not share sightings. The player sees the whole map.
-- Low-health soldiers seek a safer reachable position when they know of a threat; they defend when no threat or safer position is available. Cover reduces incoming damage. Soldiers may still fire while falling back.
+- Each soldier sees enemies within a 14-unit spotting budget, subject to terrain/obstacle occlusion and vegetation, and remembers a last sighting for approximately 10 seconds. Soldiers do not share sightings. The player sees the whole map.
+- Low-health soldiers seek a safer reachable position when they know of a threat; they defend when no threat or safer position is available. Directional partial cover reduces hit probability, while full occlusion blocks sight and fire. Higher ground can reveal targets over lower obstacles. Successful hits retain full weapon damage. Soldiers may still fire while falling back.
+- Elevation includes hills and depressions. Surfaces and directional slope affect movement speed and route cost. Roads and moderate descents can speed movement; mud and steep terrain slow it. Vegetation conceals soldiers, while firing temporarily suppresses that concealment. See [TERRAIN.md](TERRAIN.md).
 - A fixed seed supports repeatable comparisons in one environment. Reset restores the starting scenario including its seed; cross-platform deterministic replay is not established.
 
 Fullscreen and health-indicator preferences last for the app session. Campaign and puzzles are unavailable; no saves or scenario exports are implemented. The current target is desktop Chromium.
 
 ## Broader first-playable scope
 
-The committed minimum includes a handful of soldiers on two teams, a handful of weapons with different characteristics, a few configurable behavior rules, and autonomous combat that makes those rules observable. It must be reachable from a browser link without installation. The current slice provides one weapon and two doctrine controls; further weapon variety and usable doctrine presets remain part of the broader goal, not completed features. A simple map generator was proposed but the current map is fixed.
+The committed minimum includes a handful of soldiers on two teams, a handful of weapons with different characteristics, a few configurable behavior rules, and autonomous combat that makes those rules observable. It must be reachable from a browser link without installation. The current slice provides one weapon and four doctrine controls; further weapon variety and usable doctrine presets remain part of the broader goal, not completed features. A simple map generator remains proposed; the current maps are handcrafted.
 
 The central success test compares the same starting scenario and seed with different doctrine, and checks for an observable, understandable change in behavior. Native Rust simulation tests and browser integration tests exist; their presence alone does not establish acceptance of the full MVP.
 

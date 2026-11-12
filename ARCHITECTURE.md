@@ -69,14 +69,18 @@ Keep perception, doctrine evaluation, and intentions separate from the movement 
 - Simulation steps are fixed at 20 Hz. Sight refreshes each step; doctrine decisions normally run at 2 Hz and can be requested earlier by relevant state changes. The Worker publishes snapshots at approximately 10 Hz and caps catch-up at five steps after a stall. Rendering runs independently of these rates.
 - Native Rust tests and Playwright tests for the real browser Worker/WASM path are present. The current browser target is desktop Chromium. The game has no backend or persistence implementation.
 
-The current implementation uses a fixed map and explicit Rust structures. A native benchmark runner, persistence, and a generalized scenario pipeline remain future work.
+The current implementation uses three handcrafted map presets and explicit Rust structures. Maps contain row-major surface cells, vertex elevations, and rectangular solid obstacles with heights relative to the ground. Each cell is triangulated along its northwest-to-southeast diagonal. Shared Rust queries resolve physical sight, directional shot exposure, vegetation spotting, swept-radius traversal, and travel time; the renderer only displays their results. See [TERRAIN.md](TERRAIN.md) for the rules and initial tuning.
+
+Navigation uses deterministic eight-neighbour weighted searches and cached per-unit routes. A decision reuses one search when comparing candidate positions and skips it when no candidate improves the current position. Protected searches memoize repeated exposure samples and prune edges using travel-time lower bounds. Protected routing considers observed threats and per-enemy last sightings, without reading unseen enemy positions. Movement consumes a fixed-step time budget across surface and triangle boundaries. Combat rechecks visibility after movement; simultaneous fire and damage use the same pre-fire reveal state.
+
+The catalog sends static maps, surface definitions, and cell-inspection data once during initialization. Snapshots include live unit terrain status and protection relative to the current target. Static map data is not repeated in snapshots. Pixi caches static terrain at display resolution, invalidating it when maps, overlays, or scale change. A native benchmark runner, persistence, and a generalized scenario pipeline remain future work.
 
 ## Open choices and deferred work
 
 - Whether future scale warrants a Rust ECS or packed component stores; no ECS library has been selected.
 - Final doctrine evaluation algorithm, rule conflicts, inheritance, and editor detail.
 - Future timestep, snapshot representation, update rates, and persistence schema beyond the current slice.
-- Chunk layout and optional elevation/material fields; the MVP needs only flat terrain, obstacles, and cover.
+- Chunk layout for maps larger than the current small surface/elevation grids.
 - Replay determinism, recording format, and seeking.
 - Hosting provider, dependency versions, and supported browser/device matrix.
 

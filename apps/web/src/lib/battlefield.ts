@@ -1,5 +1,5 @@
 ﻿import { Application, Container, Graphics, Text } from 'pixi.js';
-import type { Scenario, Snapshot, UnitPlacement, UnitSnapshot } from './types';
+import type { Catalog, Scenario, Snapshot, UnitPlacement, UnitSnapshot } from './types';
 
 interface UnitView {
   container: Container;
@@ -23,12 +23,13 @@ export class Battlefield {
   private destroyed = false;
   private scenario?: Scenario;
   private mapKey = '';
+  private terrainResolution = 0;
   private snapshotTick: number | null = null;
   private running = false;
   private effectUntil = 0;
   private effectLines: Array<{ from: UnitView; to: UnitView }> = [];
 
-  constructor(private host: HTMLElement, private onClick: (x: number, y: number) => void) {}
+  constructor(private host: HTMLElement, private onClick: (x: number, y: number) => void, private onHover: (x: number, y: number) => void) {}
 
   async init() {
     await this.app.init({ preference: 'webgl', background: '#a49b77', antialias: true, resolution: Math.min(window.devicePixelRatio || 1, 2), autoDensity: true });
@@ -38,20 +39,21 @@ export class Battlefield {
     this.scene.addChild(this.terrain, this.range, this.effects);
     this.app.stage.addChild(this.scene);
     this.app.canvas.addEventListener('click', this.click);
+    this.app.canvas.addEventListener('pointermove', this.hover);
     this.observer = new ResizeObserver(() => this.resize());
     this.observer.observe(this.host);
     this.app.ticker.add(this.animate);
     this.resize();
   }
 
-  update(scenario: Scenario, snapshot: Snapshot | null, selected: number | null, showHp: boolean, maxHp: number, running: boolean) {
+  update(scenario: Scenario, snapshot: Snapshot | null, selected: number | null, showHp: boolean, maxHp: number, running: boolean, catalog: Catalog, overlay: boolean) {
     this.scenario = scenario;
     this.running = running;
     if (!this.app.renderer || this.destroyed) return;
-    const mapKey = JSON.stringify(scenario.map);
+    const mapKey = JSON.stringify([scenario.map, overlay]);
     if (mapKey !== this.mapKey) {
       this.mapKey = mapKey;
-      this.drawTerrain(scenario);
+      this.drawTerrain(scenario, catalog, overlay);
       this.resize();
     }
     const live = new Set(scenario.units.map(unit => unit.id));
@@ -108,14 +110,62 @@ export class Battlefield {
     if (!running) { this.effects.clear(); this.effectLines = []; }
   }
 
-  private drawTerrain(scenario: Scenario) {
+  private drawTerrain(scenario: Scenario, catalog: Catalog, overlay: boolean) {
     const {map} = scenario;
-    this.terrain.clear().rect(0, 0, map.width, map.height).fill(0xaaa27f);
-    for (let x = 0; x <= map.width; x++) this.terrain.moveTo(x, 0).lineTo(x, map.height);
-    for (let y = 0; y <= map.height; y++) this.terrain.moveTo(0, y).lineTo(map.width, y);
-    this.terrain.stroke({color:0x686b50, alpha:0.18, width:0.025});
-    for (const p of map.cover) this.terrain.roundRect(p.x + 0.08, p.y + 0.08, 0.84, 0.84, 0.15).fill(0x7b8058).stroke({color:0x5c6245, width:0.05});
-    for (const p of map.walls) this.terrain.rect(p.x + 0.04, p.y + 0.04, 0.92, 0.92).fill(0x555b4b).stroke({color:0x373e34, width:0.06});
+    this.terrain.clear();
+    const colors = new Map(catalog.surfaces.map(surface => [surface.id, surface.color]));
+    const min = Math.min(...map.elevations), max = Math.max(...map.elevations);
+    for (let y = 0; y < map.height; y++) for (let x = 0; x < map.width; x++) {
+      const surface = map.surfaces[y * map.width + x];
+      this.terrain.rect(x, y, 1, 1).fill(colors.get(surface) ?? 0xaaa27f);
+      if (overlay && max > min) {
+        const a = map.elevations[y * (map.width + 1) + x], b = map.elevations[y * (map.width + 1) + x + 1];
+        const c = map.elevations[(y + 1) * (map.width + 1) + x], d = map.elevations[(y + 1) * (map.width + 1) + x + 1];
+        // Sample the same two linear triangles as the simulation for smooth visual shading.
+        for (let sy = 0; sy < 4; sy++) for (let sx = 0; sx < 4; sx++) {
+          const u = (sx + 0.5) / 4, v = (sy + 0.5) / 4;
+          const elevation = u >= v ? a + (b - a) * u + (d - b) * v : a + (d - c) * u + (c - a) * v;
+          this.terrain.rect(x + sx / 4, y + sy / 4, 0.25, 0.25).fill({color: 0xffffff, alpha: 0.22 * (elevation - min) / (max - min)});
+        }
+      }
+      if (surface === 'brush' || surface === 'woodland') {
+        this.terrain.circle(x + 0.3, y + 0.3, 0.06).circle(x + 0.7, y + 0.65, 0.08).fill({color: 0x263b27, alpha: 0.45});
+      } else if (surface === 'mud') {
+        this.terrain.moveTo(x + 0.2, y + 0.7).lineTo(x + 0.5, y + 0.4).stroke({color: 0x463c30, alpha: 0.35, width: 0.05});
+      }
+    }
+    if (overlay) {
+      // Intersect each constant-height plane with the map's NW-SE triangles.
+      type Vertex = {x: number; y: number; z: number};
+      const contour = (vertices: Vertex[], level: number) => {
+        const points: {x: number; y: number}[] = [];
+        for (let i = 0; i < 3; i++) {
+          const a = vertices[i], b = vertices[(i + 1) % 3];
+          if ((a.z < level && b.z >= level) || (b.z < level && a.z >= level)) {
+            const t = (level - a.z) / (b.z - a.z);
+            points.push({x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t});
+          }
+        }
+        if (points.length === 2) this.terrain.moveTo(points[0].x, points[0].y).lineTo(points[1].x, points[1].y);
+      };
+      for (let y = 0; y < map.height; y++) for (let x = 0; x < map.width; x++) {
+        const at = (vx: number, vy: number): Vertex => ({x: vx, y: vy, z: map.elevations[vy * (map.width + 1) + vx]});
+        const a = at(x, y), b = at(x + 1, y), c = at(x, y + 1), d = at(x + 1, y + 1);
+        const lo = Math.ceil(Math.min(a.z, b.z, c.z, d.z)), hi = Math.floor(Math.max(a.z, b.z, c.z, d.z));
+        for (let level = lo; level <= hi; level++) { contour([a, b, d], level); contour([a, d, c], level); }
+      }
+      this.terrain.stroke({color:0x343e30, alpha:0.45, width:0.05});
+      for (let x = 0; x <= map.width; x++) this.terrain.moveTo(x, 0).lineTo(x, map.height);
+      for (let y = 0; y <= map.height; y++) this.terrain.moveTo(0, y).lineTo(map.width, y);
+      this.terrain.stroke({color:0x404a38, alpha:0.22, width:0.025});
+    }
+    for (const obstacle of map.obstacles) {
+      const full = obstacle.heightMetres >= catalog.fullObstacleHeight;
+      this.terrain.rect(obstacle.x + 0.04, obstacle.y + 0.04, obstacle.width - 0.08, obstacle.height - 0.08)
+        .fill(full ? 0x555b4b : 0x91815f).stroke({color:0x373e34, width:0.07});
+      if (!full) this.terrain.moveTo(obstacle.x + 0.1, obstacle.y + 0.5).lineTo(obstacle.x + obstacle.width - 0.1, obstacle.y + 0.5).stroke({color:0xe5d6b1, width:0.08});
+    }
+    this.terrain.updateCacheTexture();
   }
 
   private drawUnit(g: Graphics, placement: UnitPlacement, state: UnitSnapshot | undefined, selected: boolean, showHp: boolean, maxHp: number) {
@@ -150,22 +200,31 @@ export class Battlefield {
     const scale = Math.min(width / this.scenario.map.width, height / this.scenario.map.height);
     this.scene.position.set((width - this.scenario.map.width * scale) / 2, (height - this.scenario.map.height * scale) / 2);
     this.scene.scale.set(scale);
+    // The map is static between edits; cache it at the current display resolution.
+    const resolution = Math.max(1, Math.ceil(scale * this.app.renderer.resolution));
+    if (resolution !== this.terrainResolution) {
+      this.terrainResolution = resolution;
+      this.terrain.cacheAsTexture({resolution, antialias: true});
+    }
   }
 
-  private click = (event: MouseEvent) => {
-    if (!this.scenario) return;
+  private coordinates(event: MouseEvent) {
+    if (!this.scenario) return null;
     const rect = this.app.canvas.getBoundingClientRect();
     const scale = Math.min(rect.width / this.scenario.map.width, rect.height / this.scenario.map.height);
     const x = (event.clientX - rect.left - (rect.width - scale * this.scenario.map.width) / 2) / scale;
     const y = (event.clientY - rect.top - (rect.height - scale * this.scenario.map.height) / 2) / scale;
-    if (x >= 0 && y >= 0 && x < this.scenario.map.width && y < this.scenario.map.height) this.onClick(x, y);
-  };
+    return x >= 0 && y >= 0 && x < this.scenario.map.width && y < this.scenario.map.height ? {x, y} : null;
+  }
+  private click = (event: MouseEvent) => { const point = this.coordinates(event); if (point) this.onClick(point.x, point.y); };
+  private hover = (event: MouseEvent) => { const point = this.coordinates(event); if (point) this.onHover(Math.floor(point.x), Math.floor(point.y)); };
 
   destroy() {
     this.destroyed = true; this.observer?.disconnect();
     if (this.app.renderer) {
       this.app.ticker.remove(this.animate);
       this.app.canvas.removeEventListener('click', this.click);
+      this.app.canvas.removeEventListener('pointermove', this.hover);
       this.app.destroy(true, {children:true});
     }
   }
