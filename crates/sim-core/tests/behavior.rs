@@ -2,11 +2,17 @@ use sim_core::*;
 fn p(x: f64, y: f64) -> Point {
     Point { x, y }
 }
+fn obstacle(x: u32, y: u32, height_metres: f64) -> Obstacle {
+    Obstacle {
+        x,
+        y,
+        width: 1,
+        height: 1,
+        height_metres,
+    }
+}
 fn scenario(a: Point, b: Point) -> Scenario {
-    let mut map = catalog().map;
-    map.walls.clear();
-    map.cover.clear();
-    map.patrol.clear();
+    let map = ArenaMap::flat(32, 20);
     Scenario {
         map,
         seed: 1,
@@ -20,6 +26,8 @@ fn scenario(a: Point, b: Point) -> Scenario {
                 doctrine: Doctrine {
                     engagement_distance: 8.0,
                     fallback_hp: 0.0,
+                    position_preference: PositionPreference::Balanced,
+                    route_preference: RoutePreference::Fastest,
                 },
             },
             UnitPlacement {
@@ -30,6 +38,8 @@ fn scenario(a: Point, b: Point) -> Scenario {
                 doctrine: Doctrine {
                     engagement_distance: 8.0,
                     fallback_hp: 0.0,
+                    position_preference: PositionPreference::Balanced,
+                    route_preference: RoutePreference::Fastest,
                 },
             },
         ],
@@ -55,13 +65,13 @@ fn placement_validation_and_empty_setup() {
         position: p(5.5, 5.5),
         doctrine: catalog().default_doctrine,
     });
-    s.map.walls.push(p(5.0, 5.0));
+    s.map.obstacles.push(obstacle(5, 5, 2.4));
     assert!(!validate_scenario(&s, false).valid);
 }
 #[test]
 fn sight_is_blocked_and_not_shared() {
     let mut s = scenario(p(3.5, 5.5), p(7.5, 5.5));
-    s.map.walls.push(p(5.0, 5.0));
+    s.map.obstacles.push(obstacle(5, 5, 2.4));
     s.units.push(UnitPlacement {
         id: 3,
         faction: 0,
@@ -101,19 +111,28 @@ fn same_seed_repeats_and_timeout_is_reported() {
     assert_eq!(a.snapshot().result.unwrap().reason, "timeout");
 }
 #[test]
-fn cover_halves_incoming_damage() {
-    let s = scenario(p(3.5, 3.5), p(7.5, 3.5));
-    let mut covered = s.clone();
-    covered.map.cover.push(p(7.0, 3.0));
-    let mut a = Battle::new(s).unwrap();
-    let mut b = Battle::new(covered).unwrap();
-    run(&mut a, 1);
-    run(&mut b, 1);
-    assert_eq!(
-        100.0 - b.snapshot().units[1].hp,
-        (100.0 - a.snapshot().units[1].hp) / 2.0
-    );
-    assert!(a.snapshot().units[1].hp < 100.0);
+fn cover_changes_hit_probability_without_reducing_hit_damage() {
+    let mut s = scenario(p(3.5, 3.5), p(7.5, 3.5));
+    s.map.obstacles.push(obstacle(6, 3, 0.9));
+    let mut b = Battle::new(s).unwrap();
+    let mut previous = b.snapshot();
+    let mut hit = false;
+    for _ in 0..400 {
+        b.step();
+        let next = b.snapshot();
+        for (before, after) in previous.units.iter().zip(&next.units) {
+            let damage = before.hp - after.hp;
+            if damage > 0.0 {
+                assert_eq!(damage, catalog().weapon.damage);
+                hit = true;
+            }
+        }
+        previous = next;
+        if previous.result.is_some() {
+            break;
+        }
+    }
+    assert!(hit);
 }
 #[test]
 fn low_hp_doctrine_causes_fallback() {
@@ -127,7 +146,7 @@ fn low_hp_doctrine_causes_fallback() {
 #[test]
 fn patrol_routes_around_wall_without_crossing_it() {
     let mut s = scenario(p(3.5, 4.5), p(28.5, 18.5));
-    s.map.walls = (1..7).map(|y| p(5.0, y as f64)).collect();
+    s.map.obstacles = (1..7).map(|y| obstacle(5, y, 2.4)).collect();
     s.map.patrol = vec![p(8.5, 4.5)];
     let mut b = Battle::new(s).unwrap();
     for _ in 0..180 {
@@ -149,7 +168,7 @@ fn patrol_routes_around_wall_without_crossing_it() {
 fn fallback_uses_safer_cover_before_an_ally() {
     let mut s = scenario(p(8.5, 10.5), p(12.5, 10.5));
     s.units[0].doctrine.fallback_hp = 100.0;
-    s.map.cover.push(p(4.0, 8.0));
+    s.map.obstacles.push(obstacle(5, 8, 2.4));
     s.units.push(UnitPlacement {
         id: 3,
         faction: 0,
@@ -158,9 +177,10 @@ fn fallback_uses_safer_cover_before_an_ally() {
         doctrine: catalog().default_doctrine,
     });
     let mut b = Battle::new(s).unwrap();
-    run(&mut b, 10);
+    // A solid obstacle requires routing around its footprint before reaching protection.
+    run(&mut b, 35);
     let q = b.snapshot().units[0].position;
-    assert!(q.x < 8.5 && q.y < 10.5);
+    assert!(q.x < 8.5 && q.y < 10.5, "fallback position: {q:?}");
 }
 #[test]
 fn no_known_threat_means_low_hp_unit_defends() {
@@ -176,7 +196,7 @@ fn no_known_threat_means_low_hp_unit_defends() {
 #[test]
 fn malformed_terrain_is_rejected_without_panicking() {
     let mut s = scenario(p(2.5, 2.5), p(5.5, 5.5));
-    s.map.walls.push(p(f64::NAN, 1.0));
+    s.map.elevations[0] = f64::NAN;
     assert!(!validate_scenario(&s, true).valid);
 }
 
@@ -227,7 +247,8 @@ fn fallback_holds_when_no_safer_position_exists() {
 #[test]
 fn engagement_moves_to_nearby_cover() {
     let mut s = scenario(p(8.5, 10.5), p(13.5, 10.5));
-    s.map.cover.push(p(8.0, 8.0));
+    s.units[0].doctrine.position_preference = PositionPreference::Cover;
+    s.map.obstacles.push(obstacle(9, 8, 0.9));
     let mut b = Battle::new(s).unwrap();
     run(&mut b, 10);
     assert!(b.snapshot().units[0].position.y < 10.5);
@@ -236,8 +257,12 @@ fn engagement_moves_to_nearby_cover() {
 fn fallback_skips_unreachable_cover_for_safer_ally() {
     let mut s = scenario(p(8.5, 10.5), p(12.5, 10.5));
     s.units[0].doctrine.fallback_hp = 100.0;
-    s.map.cover.push(p(2.0, 2.0));
-    s.map.walls = vec![p(1.0, 2.0), p(3.0, 2.0), p(2.0, 1.0), p(2.0, 3.0)];
+    s.map.obstacles = vec![
+        obstacle(1, 2, 2.4),
+        obstacle(3, 2, 2.4),
+        obstacle(2, 1, 2.4),
+        obstacle(2, 3, 2.4),
+    ];
     s.units.push(UnitPlacement {
         id: 3,
         faction: 0,
@@ -255,7 +280,7 @@ fn fallback_skips_unreachable_cover_for_safer_ally() {
 fn fallback_finds_an_alternative_when_direct_retreat_is_blocked() {
     let mut s = scenario(p(8.5, 10.5), p(12.5, 10.5));
     s.units[0].doctrine.fallback_hp = 100.0;
-    s.map.walls.push(p(4.0, 10.0));
+    s.map.obstacles.push(obstacle(4, 10, 2.4));
     let mut b = Battle::new(s).unwrap();
     run(&mut b, 5);
     let unit = &b.snapshot().units[0];
@@ -335,4 +360,27 @@ fn sight_includes_fourteen_units_but_not_beyond() {
     outside.step();
     assert_eq!(inside.snapshot().units[0].target_id, Some(2));
     assert_eq!(outside.snapshot().units[0].target_id, None);
+}
+
+#[test]
+fn every_terrain_preset_repeats_snapshots_and_restores_the_same_start() {
+    for preset in catalog().maps {
+        let mut s = scenario(p(9.5, 9.5), p(22.5, 9.5));
+        s.map = preset.map;
+        s.time_limit = 3.0;
+        s.units[0].doctrine.route_preference = RoutePreference::Protected;
+        let mut a = Battle::new(s.clone()).unwrap();
+        let initial = a.snapshot();
+        let mut b = Battle::new(s.clone()).unwrap();
+        let mut moved = false;
+        for _ in 0..65 {
+            a.step();
+            b.step();
+            assert_eq!(a.snapshot(), b.snapshot(), "{}", preset.name);
+            moved |= a.snapshot().units[0].position != initial.units[0].position;
+        }
+        assert!(moved, "{} did not move", preset.name);
+        assert_eq!(a.snapshot().result.unwrap().reason, "timeout");
+        assert_eq!(Battle::new(s).unwrap().snapshot(), initial);
+    }
 }

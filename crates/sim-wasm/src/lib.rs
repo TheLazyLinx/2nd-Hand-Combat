@@ -1,4 +1,4 @@
-use sim_core::{catalog, validate_scenario, Battle, Scenario};
+use sim_core::{analyze_scenario, catalog, validate_scenario, Battle, Scenario};
 use wasm_bindgen::prelude::*;
 
 fn js_error(error: impl std::fmt::Display) -> JsValue {
@@ -14,6 +14,12 @@ pub fn catalog_json() -> Result<String, JsValue> {
 pub fn validate_scenario_json(json: &str, for_start: bool) -> Result<String, JsValue> {
     let scenario: Scenario = serde_json::from_str(json).map_err(js_error)?;
     serde_json::to_string(&validate_scenario(&scenario, for_start)).map_err(js_error)
+}
+
+#[wasm_bindgen]
+pub fn analyze_scenario_json(json: &str) -> Result<String, JsValue> {
+    let scenario: Scenario = serde_json::from_str(json).map_err(js_error)?;
+    serde_json::to_string(&analyze_scenario(&scenario)).map_err(js_error)
 }
 
 #[wasm_bindgen]

@@ -2,3 +2,8 @@
 
 
 .coordinate-entry{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:12px 0;font-size:11px;color:#66705e}.coordinate-entry label{display:flex;align-items:center;gap:5px}.coordinate-entry input{width:55px;padding:5px;border:1px solid #b8bcaa;background:#f5f2e8}.coordinate-entry button{border:1px solid #a5aa98;background:transparent;padding:6px 10px;color:#364033;font-size:11px;font-weight:700}
+
+.terrain-controls,.terrain-inspector,.terrain-legend{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 0;font-size:12px;color:#56614f}.terrain-controls label,.terrain-inspector label{display:flex;align-items:center;gap:6px}.terrain-controls small{color:#7e8475}.terrain-controls select,.editor select,.terrain-inspector input{padding:6px;border:1px solid #b8bcaa;background:#f5f2e8;color:#30382d}.terrain-inspector input{width:58px}.terrain-legend i{display:inline-block;width:12px;height:12px;margin-right:5px;border:1px solid #777}.editor select{display:block;width:100%;margin:8px 0 14px}.editor p{font-size:12px;line-height:1.5}
+
+.field-column,.sidebar{min-width:0}
+@media(max-width:900px){.battle-layout{grid-template-columns:minmax(0,1fr)}.sidebar{grid-template-columns:repeat(2,minmax(0,1fr))}}

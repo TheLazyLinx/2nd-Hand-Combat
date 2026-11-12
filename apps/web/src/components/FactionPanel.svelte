@@ -1,6 +1,7 @@
 ﻿<script lang="ts">
   import type { Catalog, Scenario, Snapshot } from '../lib/types';
   export let faction: number;
+  export let side: number;
   export let name: string;
   export let scenario: Scenario | null;
   export let snapshot: Snapshot | null;
@@ -14,7 +15,7 @@
 
 <section class="faction" data-testid={`faction-${faction}`}>
   <div class="faction-title">
-    <div><i class:north={faction === 0} class:south={faction === 1} class="dot"></i><strong>{name}</strong><small>FACTION 0{faction + 1}</small></div>
+    <div><i class:north={side === 0} class:south={side === 1} class="dot"></i><strong>{name}</strong><small>FACTION 0{side + 1}</small></div>
     <span>{scenario?.units.filter(u => u.faction === faction).length ?? 0} / {catalog?.maxPerFaction ?? 8}</span>
   </div>
   {#each scenario?.units.filter(u => u.faction === faction) ?? [] as unit}

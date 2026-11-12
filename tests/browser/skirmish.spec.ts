@@ -29,6 +29,8 @@ test('setup validates walls and overlap through Rust and keeps per-soldier doctr
   await expect(page.getByTestId('selected-unit')).toBeVisible();
   await page.getByTestId('engagement-distance').fill('5');
   await page.getByTestId('fallback-hp').fill('65');
+  await page.getByTestId('position-preference').selectOption('cover');
+  await page.getByTestId('route-preference').selectOption('protected');
   await page.getByTestId('add-soldier-1').click();
   await page.getByTestId('choose-infantry').click();
   await clickMap(page, 3.5, 2.5);
@@ -39,6 +41,8 @@ test('setup validates walls and overlap through Rust and keeps per-soldier doctr
   await page.getByTestId('faction-0').getByRole('button', { name: /Infantry #1/ }).click();
   await expect(page.getByTestId('engagement-distance')).toHaveValue('5');
   await expect(page.getByTestId('fallback-hp')).toHaveValue('65');
+  await expect(page.getByTestId('position-preference')).toHaveValue('cover');
+  await expect(page.getByTestId('route-preference')).toHaveValue('protected');
 });
 
 test('real WASM moves and damages units; pause freezes time and reset restores setup', async ({ page }) => {
@@ -140,7 +144,7 @@ test('the real production Worker validates input and ends at simulation time lim
     const ready = received.find(message => message.type === 'ready');
     if (!ready || ready.type !== 'ready') throw new Error('No catalog from Rust');
     const scenario = {
-      map: { width: 32, height: 20, walls: [], cover: [], patrol: [] },
+      map: { width: 32, height: 20, surfaces: Array(640).fill('open'), elevations: Array(693).fill(0), obstacles: [], patrol: [] },
       seed: 1, factions: [0, 1], timeLimit: 1,
       units: [0, 1].map(faction => ({ id: faction + 1, faction, definitionId: 'infantry', position: { x: faction ? 30.5 : 1.5, y: 1.5 }, doctrine: { ...ready.catalog.defaultDoctrine } })),
     };
@@ -160,4 +164,253 @@ test('the real production Worker validates input and ends at simulation time lim
   const result = messages.find(m => m.type === 'result');
   expect(result?.type === 'result' && result.result).toMatchObject({ winner: null, reason: 'timeout', elapsed: 1 });
   expect(messages.filter(m => m.type === 'result')).toHaveLength(1);
+});
+
+
+test('map selection clears deployment and exposes authoritative terrain inspection', async ({ page }) => {
+  await openSkirmish(page);
+  await expect(page.getByTestId('map-preset')).toHaveValue('training');
+  await place(page, 0, 2.5, 2.5);
+  await page.getByTestId('map-preset').selectOption('woodland');
+  await expect(page.getByTestId('faction-0')).toContainText('0 / 8');
+  await page.getByLabel('Inspect column').fill('6');
+  await page.getByLabel('Inspect row').fill('3');
+  await expect(page.getByTestId('terrain-readout')).toContainText('Woodland');
+  await expect(page.getByTestId('terrain-readout')).toContainText('movement x0.70');
+  await place(page, 0, 2.5, 2.5);
+  await page.getByTestId('route-preference').selectOption('protected');
+  await place(page, 1, 12.5, 2.5);
+  await page.getByTestId('start-battle').click();
+  await expect.poll(async () => (await latestSnapshot(page))?.tick).toBeGreaterThan(2);
+  await page.getByTestId('faction-0').getByRole('button', {name: /Infantry #1/}).click();
+  await expect(page.getByTestId('unit-terrain-status')).toContainText(/revealed/i);
+  await page.getByTestId('reset-battle').click();
+  await expect(page.getByTestId('map-preset')).toHaveValue('woodland');
+  await page.getByTestId('faction-0').getByRole('button', {name: /Infantry #1/}).click();
+  await expect(page.getByTestId('route-preference')).toHaveValue('protected');
+});
+
+test('each preset sustains sixteen units without prolonged worker or frame stalls', async ({ page }, testInfo) => {
+  test.setTimeout(240_000);
+  await page.setViewportSize({width: 1440, height: 900});
+  await openSkirmish(page);
+  for (const id of ['training', 'ridge', 'woodland']) {
+    await page.getByTestId('map-preset').selectOption(id);
+    for (let i = 0; i < 16; i++) await place(page, i < 8 ? 0 : 1, i < 8 ? 9.5 : 22.5, 2.5 + (i % 8) * 2);
+    await page.screenshot({path: testInfo.outputPath(`${id}-wide.png`), fullPage: true});
+    if (id === 'ridge') {
+      await page.setViewportSize({width: 900, height: 900});
+      await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      await page.screenshot({path: testInfo.outputPath(`${id}-narrow.png`), fullPage: true});
+      await page.setViewportSize({width: 1440, height: 900});
+    }
+    await page.evaluate(() => {
+      const state = {previous: performance.now(), gaps: [] as number[], active: true};
+      (window as unknown as {frameProbe: typeof state}).frameProbe = state;
+      const frame = (now: number) => {state.gaps.push(now - state.previous); state.previous = now; if (state.active) requestAnimationFrame(frame);};
+      requestAnimationFrame(frame);
+    });
+    await page.getByTestId('start-battle').click();
+    const started = Date.now();
+    const samples: {wallMs: number; tick: number}[] = [];
+    for (let second = 0; second < 8; second++) {
+      await page.waitForTimeout(1000);
+      samples.push({wallMs: Date.now() - started, tick: (await latestSnapshot(page))?.tick ?? 0});
+    }
+    const frames = await page.evaluate(() => {
+      const probe = (window as unknown as {frameProbe: {active: boolean; gaps: number[]}}).frameProbe;
+      probe.active = false;
+      const sorted = probe.gaps.sort((a, b) => a - b);
+      return {max: sorted.at(-1) ?? Infinity, p95: sorted[Math.floor(sorted.length * 0.95)] ?? Infinity};
+    });
+    const errors = await page.evaluate(() => window.observedWorkers.at(-1)!.received.filter(m => m.type === 'error'));
+    const shots = (await latestSnapshot(page))?.units.reduce((total, unit) => total + unit.shotsFired, 0) ?? 0;
+    const last = samples.at(-1)!;
+    await testInfo.attach(`${id}-performance`, {body: JSON.stringify({samples, frames, errors, shots}, null, 2), contentType: 'application/json'});
+    console.log(`${id}: tick ${last.tick}, wall ${last.wallMs} ms, frame p95 ${frames.p95.toFixed(1)} ms, max ${frames.max.toFixed(1)} ms`);
+    expect(errors, `${id} worker errors`).toEqual([]);
+    expect(shots, `${id} combat activity`).toBeGreaterThan(0);
+    expect(last.tick, `${id} worker progression`).toBeGreaterThan(last.wallMs / 50 * 0.8);
+    expect(frames.p95, `${id} p95 frame gap`).toBeLessThan(100);
+    expect(frames.max, `${id} maximum frame gap`).toBeLessThan(750);
+    await page.getByTestId('reset-battle').click();
+  }
+});
+
+test('real Workers apply terrain movement and sight and reject malformed terrain', async ({page}) => {
+  test.setTimeout(30_000);
+  await openSkirmish(page);
+  const observations = await page.evaluate(async () => {
+    const original = window.observedWorkers.at(-1)!;
+    const ready = original.received.find(m => m.type === 'ready');
+    if (!ready || ready.type !== 'ready') throw new Error('Missing catalog');
+    const catalog = ready.catalog;
+    const makeMap = (surface: string) => ({width: 32, height: 20, surfaces: Array(640).fill(surface), elevations: Array(693).fill(0), obstacles: [] as {x:number; y:number; width:number; height:number; heightMetres:number}[], patrol: [{x: 8.5, y: 5.5}]});
+    const makeScenario = (map: ReturnType<typeof makeMap>, near: boolean) => ({map, seed: 1, factions: [0, 1], timeLimit: 180, units: [0, 1].map(faction => ({id: faction + 1, faction, definitionId: catalog.unit.id, position: {x: faction ? (near ? 7.5 : 28.5) : 3.5, y: faction && !near ? 18.5 : 5.5}, doctrine: {...catalog.defaultDoctrine}}))});
+    const road = makeMap('road'), mud = makeMap('mud'), clear = makeMap('open'), wall = makeMap('open'), ridge = makeMap('open');
+    wall.obstacles.push({x: 5, y: 5, width: 1, height: 1, heightMetres: catalog.fullObstacleHeight});
+    for (let y = 0; y <= 20; y++) ridge.elevations[y * 33 + 5] = 4;
+    const scenarios = [makeScenario(road, false), makeScenario(mud, false), makeScenario(clear, true), makeScenario(wall, true), makeScenario(ridge, true)];
+    const workers = scenarios.map(() => new Worker(original.url, {type: 'module'}));
+    try {
+      const run = (worker: Worker, scenario: unknown, index: number) => new Promise<{x: number; target: number | null}>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error(`Terrain worker ${index} timed out`)), 7000);
+        worker.addEventListener('message', event => {
+          const message = event.data;
+          if (message.type === 'ready') worker.postMessage({type:'start', battleId: 1, scenario});
+          else if (message.type === 'error') {clearTimeout(timeout); reject(new Error(message.message));}
+          else if (message.type === 'snapshot' && message.snapshot.tick >= (index < 2 ? 30 : 2)) {
+            clearTimeout(timeout); resolve({x: message.snapshot.units[0].position.x, target: message.snapshot.units[0].targetId});
+          }
+        });
+        worker.postMessage({type:'initialize'});
+      });
+      const values = await Promise.all(workers.map((worker, index) => run(worker, scenarios[index], index)));
+      const invalid = makeScenario(makeMap('open'), false);
+      invalid.map.elevations.pop();
+      const badSurface = makeScenario(makeMap('unknown'), false);
+      const errors = await Promise.all([invalid, badSurface].map((scenario, index) => new Promise<string>((resolve, reject) => {
+        const requestId = 900 + index;
+        const timeout = setTimeout(() => reject(new Error('Validation timeout')), 5000);
+        const handler = (event: MessageEvent) => {
+          if (event.data.requestId !== requestId) return;
+          clearTimeout(timeout); original.worker.removeEventListener('message', handler);
+          resolve(event.data.type === 'validation' ? String(event.data.validation.valid) : event.data.message);
+        };
+        original.worker.addEventListener('message', handler);
+        original.worker.postMessage({type:'validate', requestId, scenario, forStart: true});
+      })));
+      return {values, errors};
+    } finally { workers.forEach(worker => worker.terminate()); }
+  });
+  expect(observations.values[0].x).toBeGreaterThan(observations.values[1].x + 0.2);
+  expect(observations.values[2].target).toBe(2);
+  expect(observations.values[3].target).toBeNull();
+  expect(observations.values[4].target).toBeNull();
+  expect(observations.errors[0]).toBe('false');
+  expect(observations.errors[1]).toMatch(/unknown variant/i);
+});
+
+
+test('protected routes sustain sixteen units on each preset', async ({page}, testInfo) => {
+  test.setTimeout(90_000);
+  await openSkirmish(page);
+  const measurements = await page.evaluate(async () => {
+    const {worker, received} = window.observedWorkers.at(-1)!;
+    const ready = received.find(message => message.type === 'ready');
+    if (!ready || ready.type !== 'ready') throw new Error('Missing catalog');
+    const catalog = ready.catalog;
+    const measurements: {id: string; wallMs: number; tick: number; finished: boolean; errors: string[]}[] = [];
+    for (const [index, preset] of catalog.maps.entries()) {
+      const battleId = 100 + 2 * index;
+      const scenario = {
+        map: preset.map, seed: 1, factions: [0, 1], timeLimit: 180,
+        units: Array.from({length: 16}, (_, i) => ({
+          id: i + 1, faction: i < 8 ? 0 : 1, definitionId: catalog.unit.id,
+          position: {x: i < 8 ? 9.5 : 22.5, y: 2.5 + (i % 8) * 2},
+          doctrine: {...catalog.defaultDoctrine, routePreference: 'protected' as const},
+        })),
+      };
+      const started = performance.now();
+      worker.postMessage({type: 'start', battleId, scenario});
+      await new Promise<void>(resolve => {
+        const timer = setTimeout(done, 8000);
+        function done() { clearTimeout(timer); worker.removeEventListener('message', onMessage); resolve(); }
+        function onMessage(event: MessageEvent) {
+          if (event.data.battleId === battleId && (event.data.type === 'result' || event.data.type === 'error')) done();
+        }
+        worker.addEventListener('message', onMessage);
+      });
+      const wallMs = performance.now() - started;
+      const latest = received.findLast(message => message.type === 'snapshot' && message.battleId === battleId);
+      const errors = received.filter(message => message.type === 'error' && message.battleId === battleId).map(message => message.type === 'error' ? message.message : '');
+      measurements.push({id: preset.id, wallMs, tick: latest?.type === 'snapshot' ? latest.snapshot.tick : 0, finished: received.some(message => message.type === 'result' && message.battleId === battleId), errors});
+      worker.postMessage({type: 'reset', battleId: battleId + 1});
+    }
+    return measurements;
+  });
+  await testInfo.attach('protected-route-performance', {body: JSON.stringify(measurements, null, 2), contentType: 'application/json'});
+  for (const result of measurements) {
+    console.log(`${result.id} protected: tick ${result.tick}, wall ${result.wallMs.toFixed(0)} ms, finished ${result.finished}`);
+    expect(result.errors, `${result.id} protected worker errors`).toEqual([]);
+    if (!result.finished) expect(result.tick, `${result.id} protected worker progression`).toBeGreaterThan(result.wallMs / 50 * 0.8);
+  }
+});
+
+
+test('preset layouts fit wide and narrow viewports', async ({page}, testInfo) => {
+  test.setTimeout(90_000);
+  await page.setViewportSize({width: 1440, height: 900});
+  await openSkirmish(page);
+  for (const id of ['training', 'ridge', 'woodland']) {
+    await page.getByTestId('map-preset').selectOption(id);
+    await place(page, 0, 2.5, 2.5);
+    for (const width of [1440, 900]) {
+      await page.setViewportSize({width, height: 900});
+      await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+      await page.screenshot({path: testInfo.outputPath(`${id}-${width}.png`), fullPage: true});
+    }
+  }
+});
+
+
+test('128 by 128 mixed-terrain protected routes remain responsive through the real Worker', async ({ page }, info) => {
+  test.setTimeout(90_000);
+  await page.goto('/');
+  await page.getByRole('button', {name: /MapMaker/}).click();
+  await expect(page.locator('.maker canvas')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.observedWorkers[0]?.received.some(message => message.type === 'ready'))).toBe(true);
+  const document = await page.evaluate(() => {
+    const ready = window.observedWorkers[0].received.find(message => message.type === 'ready');
+    if (!ready || ready.type !== 'ready') throw new Error('Catalog unavailable');
+    const catalog = ready.catalog, width = 128, height = 128;
+    const surfaces = Array.from({length: width * height}, (_, i) => {
+      const x = i % width, y = Math.floor(i / width);
+      return y % 17 === 0 ? 'road' : (x + y) % 11 === 0 ? 'mud' : (x + y) % 13 === 0 ? 'brush' : 'open';
+    });
+    const units = Array.from({length: 16}, (_, i) => ({id:i + 1, faction:i < 8 ? 0 : 1, definitionId:catalog.unit.id,
+      position:{x: i < 8 ? 57.5 : 69.5, y: 55.5 + (i % 8) * 2},
+      doctrine:{...catalog.defaultDoctrine, routePreference:i % 2 ? 'protected' : 'fastest'}}));
+    return {format:'2nd-hand-combat-scenario', schemaVersion:1, name:'Large mixed field', description:'Performance scenario',
+      scenario:{map:{width,height,surfaces,elevations:Array((width + 1) * (height + 1)).fill(0),obstacles:[],patrol:[]},seed:catalog.defaultSeed,factions:[0,1],units,timeLimit:catalog.defaultTimeLimit}};
+  });
+  await page.locator('input[type=file]').setInputFiles({name:'large.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(document))});
+  await expect(async () => {
+    const guard = page.getByRole('dialog', {name:'Unsaved changes'});
+    if (await guard.isVisible()) await guard.getByRole('button', {name:'Discard', exact:true}).click();
+    await expect(page.getByLabel('Name', {exact:true})).toHaveValue('Large mixed field');
+  }).toPass({timeout: 30_000});
+  await info.attach('editor-fit', {body:await page.screenshot(), contentType:'image/png'});
+  await page.getByRole('button', {name:'Zoom in'}).click();
+  await info.attach('editor-zoom', {body:await page.screenshot(), contentType:'image/png'});
+  await page.getByRole('button', {name:'Fit map'}).click();
+  await expect(page.getByRole('button', {name:'Test battle'})).toBeEnabled({timeout:30_000});
+  await page.getByRole('button', {name:'Test battle'}).click();
+  await expect(page.getByTestId('battle-status')).toHaveText('SETUP');
+  await expect(page.locator('.field-meta')).toContainText(/128\s*\D\s*128/);
+  await info.attach('battle-fit', {body:await page.screenshot(), contentType:'image/png'});
+  await page.getByRole('button', {name:'Zoom in'}).click();
+  await info.attach('battle-zoom', {body:await page.screenshot(), contentType:'image/png'});
+  await page.getByRole('button', {name:'Fit map'}).click();
+  await page.getByTestId('start-battle').click();
+  await expect(page.getByTestId('battle-status')).toHaveText('RUNNING');
+  const frameGaps = await page.evaluate(() => new Promise<number[]>(resolve => {
+    const gaps: number[] = []; let previous = 0; const start = performance.now();
+    function frame(now: number) { if (previous) gaps.push(now - previous); previous = now; if (now - start < 10_000) requestAnimationFrame(frame); else resolve(gaps); }
+    requestAnimationFrame(frame);
+  }));
+  frameGaps.sort((a,b) => a-b);
+  expect(frameGaps[Math.floor(frameGaps.length * .95)]).toBeLessThan(100);
+  expect(Math.max(...frameGaps)).toBeLessThan(750);
+  const timing = await page.evaluate(() => {
+    const worker = window.observedWorkers.at(-1)!;
+    return worker.received.flatMap((message, i) => message.type === 'snapshot' ? [{tick:message.snapshot.tick, time:worker.times[i]}] : []);
+  });
+  expect(timing.length).toBeGreaterThan(10);
+  const first = timing[0], last = timing.at(-1)!;
+  expect((last.tick-first.tick) / ((last.time-first.time) / 1000)).toBeGreaterThanOrEqual(16);
+  const perTick = timing.slice(1).map((sample,i) => (sample.time-timing[i].time) / Math.max(1,sample.tick-timing[i].tick)).sort((a,b)=>a-b);
+  expect(perTick[Math.floor(perTick.length * .95)]).toBeLessThan(100);
+  const gaps = timing.slice(1).map((sample, i) => sample.time - timing[i].time);
+  expect(Math.max(...gaps)).toBeLessThan(750);
 });
