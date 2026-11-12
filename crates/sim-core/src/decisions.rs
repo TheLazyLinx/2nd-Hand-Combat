@@ -71,8 +71,24 @@ pub(crate) fn decide(input: &DecisionInput<'_>, map: &ArenaMap, faction_index: u
                 );
             }
         }
-        let search =
-            navigation::Search::with_threats(map, me.position, threats, preference, revealed);
+        let targets: Vec<_> = (0..map.height)
+            .flat_map(|y| {
+                (0..map.width).map(move |x| Point {
+                    x: x as f64 + 0.5,
+                    y: y as f64 + 0.5,
+                })
+            })
+            .chain(input.allies.iter().copied())
+            .filter(|p| me.position.distance(*p) <= 5.0)
+            .collect();
+        let search = navigation::Search::for_targets(
+            map,
+            me.position,
+            threats,
+            preference,
+            revealed,
+            &targets,
+        );
         let mut best: Option<(Point, f64, f64, f64, bool)> = None;
         let cells = (0..map.height).flat_map(|y| {
             (0..map.width).map(move |x| Point {
@@ -230,8 +246,15 @@ pub(crate) fn decide(input: &DecisionInput<'_>, map: &ArenaMap, faction_index: u
         if candidates.is_empty() {
             return decision(Behavior::Engaging, None, None, me.patrol_index, None);
         }
-        let search =
-            navigation::Search::with_threats(map, me.position, threats, preference, revealed);
+        let targets: Vec<_> = candidates.iter().map(|(p, _)| *p).collect();
+        let search = navigation::Search::for_targets(
+            map,
+            me.position,
+            threats,
+            preference,
+            revealed,
+            &targets,
+        );
         let mut best: Option<(Point, f64, f64)> = None;
         for (p, value) in candidates {
             let Some(cost) = search.cost(p) else {

@@ -10,7 +10,7 @@ Source: [Game Architecture Options](https://chatgpt.com/c/6ae4ac8c-6904-83eb-a33
 
 The player primarily configures how units behave, then watches autonomous combat. Doctrine means the rules and parameters that guide that behavior: when to fire, when to move or withdraw, and how to use cover.
 
-The intended presentation is a straightforward browser game: open a link, reach a splash screen, and enter a mode. The current shell offers Skirmish and Options; Campaign and Puzzles are unavailable.
+The intended presentation is a straightforward browser game: open a link, reach a splash screen, and enter a mode. The current shell offers Skirmish, Map Maker, and Options; Campaign and Puzzles are unavailable.
 
 The central gameplay test is whether changing doctrine produces visible, understandable changes in unit behavior.
 
@@ -30,12 +30,13 @@ The current slice offers per-soldier engagement distance, fallback health, posit
 | Mode | Intended role | Release status |
 | --- | --- | --- |
 | Skirmish | Configure a sandbox battle and experiment with doctrine | Initial slice implemented |
+| Map Maker | Author complete Skirmish scenarios and save or share JSON files | Implemented |
 | Puzzles | Solve constrained combat scenarios through behavior configuration | Future |
 | Campaign | Earn currency and spend it on soldiers and weapons across battles | Future |
 
 All modes should use the same combat simulation. Restrictions, scenario construction, and progression distinguish them.
 
-Random maps are part of the intended direction; the current slice uses three handcrafted terrain presets. A future initial generator can be small and simple. Custom maps, real-world map services, and image-derived maps are separate future possibilities.
+Random maps are part of the intended direction; the current slice uses three handcrafted terrain presets. A future initial generator can be small and simple. Custom maps and full scenarios are authored in [Map Maker](MAP_MAKER.md). Real-world map services and image-derived maps remain future possibilities.
 
 ## Player control
 

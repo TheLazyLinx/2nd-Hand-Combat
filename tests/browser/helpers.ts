@@ -3,7 +3,7 @@ import type { Snapshot, WorkerCommand, WorkerReply } from '../../apps/web/src/li
 
 declare global {
   interface Window {
-    observedWorkers: { worker: Worker; url: string; received: WorkerReply[]; sent: WorkerCommand[]; terminated: boolean }[];
+    observedWorkers: { worker: Worker; url: string; received: WorkerReply[]; times: number[]; sent: WorkerCommand[]; terminated: boolean }[];
   }
 }
 
@@ -16,9 +16,9 @@ export async function observeWorkers(page: Page) {
       record: Window['observedWorkers'][number];
       constructor(url: string | URL, options?: WorkerOptions) {
         super(url, options);
-        this.record = { worker: this, url: String(url), received: [], sent: [], terminated: false };
+        this.record = { worker: this, url: String(url), received: [], times: [], sent: [], terminated: false };
         window.observedWorkers.push(this.record);
-        this.addEventListener('message', event => this.record.received.push(event.data));
+        this.addEventListener('message', event => { this.record.received.push(event.data); this.record.times.push(performance.now()); });
       }
       override postMessage(message: WorkerCommand) {
         this.record.sent.push(structuredClone(message));
@@ -40,7 +40,9 @@ export async function clickMap(page: Page, x: number, y: number) {
   const canvas = page.getByTestId('battlefield').locator('canvas');
   const box = await canvas.boundingBox();
   if (!box) throw new Error('Battlefield canvas has no visible bounds.');
-  await canvas.click({ position: { x: box.width * x / 32, y: box.height * y / 20 } });
+  const dimensions = await page.getByTestId('battlefield').evaluate(element => ({width: Number(element.dataset.mapWidth), height: Number(element.dataset.mapHeight)}));
+  const scale = Math.min(box.width / dimensions.width, box.height / dimensions.height);
+  await canvas.click({ position: { x: (box.width - dimensions.width * scale) / 2 + scale * x, y: (box.height - dimensions.height * scale) / 2 + scale * y } });
 }
 
 export async function place(page: Page, faction: number, x: number, y: number) {

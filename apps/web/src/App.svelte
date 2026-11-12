@@ -1,149 +1,24 @@
 <script lang="ts">
-  import { onMount, tick } from 'svelte';
-  import { BattleClient } from './lib/client';
-  import { Battlefield } from './lib/battlefield';
-  import FactionPanel from './components/FactionPanel.svelte';
-  import DoctrineEditor from './components/DoctrineEditor.svelte';
-  import UnitPicker from './components/UnitPicker.svelte';
-  import Results from './components/Results.svelte';
-  import type { BattleResult, Catalog, Doctrine, Scenario, Snapshot, UnitPlacement, WorkerReply } from './lib/types';
-
-  let screen: 'home' | 'options' | 'skirmish' = 'home';
-  let catalog: Catalog | null = null;
-  let scenario: Scenario | null = null;
-  let starting: Scenario | null = null;
-  let snapshot: Snapshot | null = null;
-  let result: BattleResult | null = null;
-  let phase: 'loading' | 'setup' | 'running' | 'paused' | 'finished' | 'error' = 'loading';
-  let error = '';
-  let selected: number | null = null;
-  let placement: number | null = null;
-  let modalFaction: number | null = null;
-  let busy = false;
-  let deployX = 0;
-  let deployY = 0;
-  let mapId = '';
-  let startingMapId = '';
-  let inspectX = 0;
-  let inspectY = 0;
-  let terrainOverlay = true;
+  import { onMount } from 'svelte';
+  import MapMaker from './components/MapMaker.svelte';
+  import Skirmish from './components/Skirmish.svelte';
+  import type { EditorSession } from './lib/editor';
+  import type { ScenarioDocument } from './lib/types';
+  let screen: 'home' | 'options' | 'maker' | 'skirmish' = 'home';
+  let editorSession: EditorSession | null = null;
+  let initialDocument: ScenarioDocument | null = null;
   let showHp = true;
   let fullscreen = false;
-  let host: HTMLElement;
-  let client: BattleClient | null = null;
-  let battlefield: Battlefield | null = null;
-  let generation = 0;
-  const names = ['North', 'South'];
-  const copy = <T,>(value: T): T => structuredClone(value);
-  $: selectedUnit = scenario?.units.find(unit => unit.id === selected) ?? null;
-  $: mapIndex = catalog?.maps.findIndex(map => map.id === mapId) ?? -1;
-  $: inspected = scenario && catalog && mapIndex >= 0 && Number.isInteger(inspectX) && Number.isInteger(inspectY) && inspectX >= 0 && inspectY >= 0 && inspectX < scenario.map.width && inspectY < scenario.map.height ? catalog.terrainCells[mapIndex]?.[inspectY * scenario.map.width + inspectX] : null;
-  $: selectedState = snapshot?.units.find(unit => unit.id === selected) ?? null;
-  $: if (battlefield && scenario && catalog) battlefield.update(scenario, snapshot, selected, showHp, catalog.unit.maxHp, phase === 'running', catalog, terrainOverlay);
-
-  function receive(message: WorkerReply) {
-    if (message.type === 'ready') {
-      catalog = message.catalog;
-      mapId = catalog.maps[0]?.id ?? '';
-      scenario = { map: copy(catalog.map), seed: catalog.defaultSeed, factions: [0, 1], units: [], timeLimit: catalog.defaultTimeLimit };
-      snapshot = null; result = null; selected = null; placement = null; phase = 'setup'; error = '';
-    } else if (message.type === 'snapshot') {
-      snapshot = message.snapshot;
-      if (message.snapshot.result) { result = message.snapshot.result; phase = 'finished'; }
-    } else if (message.type === 'state') {
-      if (message.state === 'running' && document.hidden) { client?.pause(); phase = 'paused'; }
-      else if (message.state === 'running' || message.state === 'paused') phase = message.state;
-    } else if (message.type === 'result') { result = message.result; phase = 'finished'; }
-    else if (message.type === 'error') { error = message.message; phase = 'error'; }
-  }
-  async function openSkirmish() {
-    closeBattle(); screen = 'skirmish'; phase = 'loading'; error = '';
-    const current = ++generation;
-    await tick();
-    if (current !== generation || !host) return;
-    try {
-      battlefield = new Battlefield(host, mapClick, (x, y) => { inspectX = x; inspectY = y; });
-      await battlefield.init();
-      if (current !== generation) return;
-      client = new BattleClient(receive);
-      client.initialize();
-    } catch (e) { if (current === generation) { error = e instanceof Error ? e.message : String(e); phase = 'error'; } }
-  }
-  function closeBattle() {
-    generation++; client?.dispose(); client = null; battlefield?.destroy(); battlefield = null;
-    catalog = null; scenario = null; snapshot = null; result = null; starting = null; selected = null; placement = null; modalFaction = null; busy = false;
-  }
-  function back() { closeBattle(); screen = 'home'; }
-  async function mapClick(x: number, y: number) {
-    if (!scenario || !catalog || busy) return;
-    if (phase !== 'setup') {
-      const nearest = snapshot?.units.find(unit => Math.hypot(unit.position.x - x, unit.position.y - y) < 0.65);
-      selected = nearest?.id ?? null; return;
-    }
-    if (placement !== null) {
-      const faction = placement;
-      const candidate = copy(scenario);
-      candidate.units.push({ id: Math.max(0, ...candidate.units.map(unit => unit.id)) + 1, faction, definitionId: catalog.unit.id, position: {x: Math.floor(x) + 0.5, y: Math.floor(y) + 0.5}, doctrine: copy(catalog.defaultDoctrine) });
-      const token = generation; busy = true; error = '';
-      try {
-        const validation = await client!.validate(candidate, false);
-        if (token !== generation) return;
-        if (validation.valid) { scenario = candidate; selected = candidate.units[candidate.units.length - 1].id; placement = null; }
-        else error = validation.issues.map(issue => issue.message).join(' ');
-      } catch (e) { if (token === generation) error = e instanceof Error ? e.message : String(e); }
-      finally { if (token === generation) busy = false; }
-    } else {
-      const nearest = scenario.units.find(unit => Math.hypot(unit.position.x - x, unit.position.y - y) < 0.65);
-      selected = nearest?.id ?? null;
-    }
-  }
-  function editUnit(id: number, patch: Partial<UnitPlacement>) {
-    if (!scenario || phase !== 'setup' || busy) return;
-    scenario = {...scenario, units: scenario.units.map(unit => unit.id === id ? {...unit, ...patch} : unit)};
-  }
-  function doctrine(field: keyof Doctrine, value: Doctrine[keyof Doctrine]) {
-    if (selectedUnit) editUnit(selectedUnit.id, {doctrine: {...selectedUnit.doctrine, [field]: value}});
-  }
-  function changeMap(id: string) {
-    const preset = catalog?.maps.find(map => map.id === id);
-    if (!preset || !scenario || phase !== 'setup' || busy) return;
-    mapId = id; scenario = {...scenario, map: copy(preset.map), units: []};
-    selected = null; placement = null; inspectX = 0; inspectY = 0; error = '';
-  }
-  function removeUnit() {
-    if (!scenario || selected === null || busy) return;
-    scenario = {...scenario, units: scenario.units.filter(unit => unit.id !== selected)}; selected = null;
-  }
-  async function start() {
-    if (!scenario || !client || busy) return;
-    const candidate = copy(scenario), token = generation; busy = true; error = '';
-    try {
-      const validation = await client.validate(candidate, true);
-      if (token !== generation) return;
-      if (!validation.valid) { error = validation.issues.map(issue => issue.message).join(' '); return; }
-      starting = copy(candidate); startingMapId = mapId; snapshot = null; result = null; selected = null; placement = null;
-      client.start(candidate);
-      if (document.hidden) { client.pause(); phase = 'paused'; } else phase = 'running';
-    } catch (e) { if (token === generation) error = e instanceof Error ? e.message : String(e); }
-    finally { if (token === generation) busy = false; }
-  }
-  function reset() {
-    if (!client || !starting) return;
-    client.reset(); scenario = copy(starting); mapId = startingMapId; snapshot = null; result = null; selected = null; placement = null; error = ''; phase = 'setup';
-  }
-  function pause() { if (phase === 'running') { client?.pause(); phase = 'paused'; } }
-  function resume() { if (phase === 'paused') { client?.resume(); phase = 'running'; } }
+  let error = '';
   async function toggleFullscreen() {
     error = '';
     try { if (document.fullscreenElement) await document.exitFullscreen(); else await document.documentElement.requestFullscreen(); }
     catch (e) { error = `Fullscreen unavailable: ${e instanceof Error ? e.message : String(e)}`; }
   }
   onMount(() => {
-    const visibility = () => { if (document.hidden) pause(); };
-    const fullscreenChange = () => { fullscreen = !!document.fullscreenElement; };
-    const keydown = (event: KeyboardEvent) => { if (event.key === 'Escape') { modalFaction = null; placement = null; } };
-    document.addEventListener('visibilitychange', visibility); document.addEventListener('fullscreenchange', fullscreenChange); window.addEventListener('keydown', keydown);
-    return () => { document.removeEventListener('visibilitychange', visibility); document.removeEventListener('fullscreenchange', fullscreenChange); window.removeEventListener('keydown', keydown); closeBattle(); };
+    const change = () => { fullscreen = !!document.fullscreenElement; };
+    document.addEventListener('fullscreenchange', change);
+    return () => document.removeEventListener('fullscreenchange', change);
   });
 </script>
 
@@ -154,52 +29,13 @@
     <div class="landing-content">
       <p class="eyebrow">A tactical sandbox</p><h1>2nd Hand<br/><em>Combat</em><span class="period">.</span></h1>
       <p class="intro">Set the doctrine. Place your soldiers. Watch the battle unfold.</p>
-      <div class="menu"><button class="menu-main" onclick={openSkirmish}><span>01</span><strong>Skirmish</strong><b>&rarr;</b></button><button disabled><span>02</span><strong>Campaign</strong><small>COMING LATER</small></button><button disabled><span>03</span><strong>Puzzles</strong><small>COMING LATER</small></button><button onclick={() => { error = ''; screen = 'options'; }}><span>04</span><strong>Options</strong><b>&rarr;</b></button></div>
+      <div class="menu"><button class="menu-main" onclick={() => { initialDocument = null; screen = 'skirmish'; }}><span>01</span><strong>Skirmish</strong><b>&rarr;</b></button><button onclick={() => screen = 'maker'}><span>02</span><strong>MapMaker</strong><b>&rarr;</b></button><button disabled><span>03</span><strong>Campaign</strong><small>COMING LATER</small></button><button disabled><span>04</span><strong>Puzzles</strong><small>COMING LATER</small></button><button onclick={() => { error = ''; screen = 'options'; }}><span>05</span><strong>Options</strong><b>&rarr;</b></button></div>
     </div><div class="landing-foot">A STUDY IN SMALL-UNIT TACTICS <span>&bull;</span> EST. 01</div>
   </main>
 {:else if screen === 'options'}
   <main class="options-page"><header class="topbar"><button class="back" onclick={() => screen = 'home'}>&larr; Back</button><span>FIELD MANUAL / OPTIONS</span></header><section class="options-card"><p class="eyebrow">Preferences / 01</p><h1>Options<span class="period">.</span></h1><p>Make the battlefield your own.</p><div class="option-row"><div><strong>Fullscreen</strong><small>{fullscreen ? 'On' : 'Off'}</small></div><button onclick={toggleFullscreen}>{fullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}</button></div><div class="option-row"><div><strong>Health indicators</strong><small>Show health above soldiers during battle</small></div><label class="check"><input type="checkbox" bind:checked={showHp}/> Show</label></div>{#if error}<p class="error" role="alert">{error}</p>{/if}</section></main>
+{:else if screen === 'maker'}
+  <MapMaker session={editorSession} onSession={(session) => editorSession = session} onTest={(document) => { initialDocument = structuredClone(document); screen = 'skirmish'; }} onBack={() => { editorSession = null; screen = 'home'; }} />
 {:else}
-  <main class="workspace"><header class="topbar"><button class="back" onclick={back}>&larr; Main menu</button><div class="brand">2ND HAND <span>COMBAT</span></div><div class="top-status" data-testid="battle-status"><i></i>{phase === 'setup' ? 'SETUP' : phase.toUpperCase()}</div></header>
-    {#if phase === 'loading' || phase === 'error'}<div class="loading"><p class="eyebrow">FIELD OPERATIONS</p><h2>{phase === 'loading' ? 'Preparing the field…' : 'Unable to prepare the field'}</h2>{#if error}<p role="alert">{error}</p><button onclick={openSkirmish}>Retry</button>{/if}<button class="text-button" onclick={back}>Back to menu</button></div>{/if}
-    <div class:hidden={phase === 'loading' || phase === 'error'} class="battle-layout">
-      <section class="field-column"><div class="field-heading"><div><p class="eyebrow">OPERATION / SKIRMISH</p><h1>Battlefield<span class="period">.</span></h1></div><div class="field-meta">32 × 20 <span> / </span> SEED {scenario?.seed}</div></div>
-        <div class="map-frame"><div class="map-top"><span>TACTICAL MAP</span><span>{phase === 'setup' ? 'DEPLOYMENT' : 'LIVE VIEW'} / {snapshot ? `${snapshot.elapsed.toFixed(1)}s` : '00:00'}</span></div><div class="battlefield" data-testid="battlefield" bind:this={host}></div><div class="map-bottom"><span><i class="dot north"></i>NORTH</span><span><i class="dot south"></i>SOUTH</span><span><i class="square cover"></i>LOW OBSTACLE</span><span><i class="square wall"></i>FULL OBSTACLE</span><span class="map-hint">{placement !== null ? `CLICK THE MAP TO PLACE ${names[placement].toUpperCase()} INFANTRY · ESC TO CANCEL` : phase === 'setup' ? 'SELECT A SOLDIER TO EDIT DOCTRINE' : 'AUTONOMOUS COMBAT'}</span></div></div>
-        {#if catalog && scenario}
-          <div class="terrain-controls">
-            <label>Map <select data-testid="map-preset" value={mapId} disabled={phase !== 'setup' || busy} onchange={(e) => changeMap(e.currentTarget.value)}>{#each catalog.maps as map}<option value={map.id}>{map.name}</option>{/each}</select></label>
-            <span>{catalog.maps[mapIndex]?.description}</span><small>Changing the map clears placed soldiers.</small>
-            <label><input type="checkbox" bind:checked={terrainOverlay}/> Terrain grid and elevation shading</label>
-          </div>
-          <div class="terrain-inspector" aria-label="Terrain inspector">
-            <strong>Inspect terrain</strong><label>Column <input aria-label="Inspect column" type="number" min="0" max={scenario.map.width - 1} bind:value={inspectX}/></label><label>Row <input aria-label="Inspect row" type="number" min="0" max={scenario.map.height - 1} bind:value={inspectY}/></label>
-            {#if inspected}<span data-testid="terrain-readout">{catalog.surfaces.find(surface => surface.id === inspected.surface)?.name}: elevation {inspected.elevation.toFixed(1)} m | movement x{inspected.movementMultiplier.toFixed(2)} | {inspected.traversable ? 'traversable' : 'blocked'}</span>{:else}<span>Choose a valid cell.</span>{/if}
-          </div>
-          <div class="terrain-legend" aria-label="Terrain legend">{#each catalog.surfaces as surface}<span><i style={`background:#${surface.color.toString(16).padStart(6, '0')}`}></i>{surface.name}</span>{/each}</div>
-        {/if}
-        {#if placement !== null}<div class="coordinate-entry"><span>Or enter a grid position:</span><label>Column <input type="number" min="0" max={(scenario?.map.width ?? 1) - 1} bind:value={deployX}/></label><label>Row <input type="number" min="0" max={(scenario?.map.height ?? 1) - 1} bind:value={deployY}/></label><button disabled={busy || !Number.isInteger(deployX) || !Number.isInteger(deployY) || deployX < 0 || deployY < 0 || deployX >= (scenario?.map.width ?? 0) || deployY >= (scenario?.map.height ?? 0)} onclick={() => mapClick(deployX + 0.5, deployY + 0.5)}>Place soldier</button></div>{/if}
-        {#if error}<p class="error" role="alert">{error}</p>{/if}
-        <div class="action-bar"><div><strong>{phase === 'setup' ? 'Prepare your forces' : phase === 'finished' ? 'Battle complete' : phase === 'paused' ? 'Battle paused' : 'Battle in progress'}</strong><small>{phase === 'setup' ? 'Place at least one soldier on each side.' : phase === 'paused' ? 'Resume when you are ready.' : 'Doctrine stays fixed during battle.'}</small></div><div class="actions">{#if phase === 'setup'}<button class="primary" data-testid="start-battle" disabled={busy || !scenario?.units.some(u => u.faction === 0) || !scenario?.units.some(u => u.faction === 1)} onclick={start}>Start battle <span>&rarr;</span></button>{:else if phase === 'running'}<button class="primary" data-testid="pause-battle" onclick={pause}>Pause battle</button>{:else if phase === 'paused'}<button class="primary" data-testid="resume-battle" onclick={resume}>Resume battle</button>{/if}{#if starting && phase !== 'setup'}<button data-testid="reset-battle" onclick={reset}>Reset</button>{/if}</div></div>
-        {#if result}<Results {result} {names} />{/if}
-      </section>
-      <aside class="sidebar"><div class="sidebar-head"><p class="eyebrow">FORCE ROSTER</p><h2>Deploy units</h2><p>Build each side, then adjust individual doctrine.</p></div>
-        {#each [0, 1] as faction}
-          <FactionPanel {faction} name={names[faction]} {scenario} {snapshot} {catalog} {selected}
-            editable={phase === 'setup'} {busy}
-            onSelect={(id) => { selected = id; placement = null; }}
-            onAdd={() => { modalFaction = faction; placement = null; }} />
-        {/each}
-        {#if selectedUnit && phase === 'setup'}
-          <DoctrineEditor unit={selectedUnit} {busy} onClose={() => selected = null} onChange={doctrine} onRemove={removeUnit} />
-        {:else if selectedUnit && selectedState}
-          <section class="editor" data-testid="unit-terrain-status"><h3>Infantry #{selectedUnit.id}</h3><p>{selectedState.terrain.surface} | elevation {selectedState.terrain.elevation.toFixed(1)} m | movement x{selectedState.terrain.movementMultiplier.toFixed(2)}</p><p>{selectedState.terrain.revealed ? 'Revealed' : 'Not revealed'} | {selectedState.terrain.protection === null ? 'No current target' : `${Math.round(selectedState.terrain.protection * 100)}% directional protection against target #${selectedState.targetId}`}</p></section>
-        {/if}
-      </aside>
-    </div>
-  </main>
-  {#if modalFaction !== null}
-    <UnitPicker name={names[modalFaction]} onClose={() => modalFaction = null}
-      onChoose={() => { placement = modalFaction; modalFaction = null; selected = null; error = ''; }} />
-  {/if}
+  <Skirmish {showHp} {initialDocument} returnToMaker={editorSession !== null && initialDocument !== null} onBack={() => { screen = editorSession !== null && initialDocument !== null ? 'maker' : 'home'; initialDocument = null; }} />
 {/if}
-

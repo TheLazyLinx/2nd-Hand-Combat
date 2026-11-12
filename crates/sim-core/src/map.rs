@@ -311,6 +311,11 @@ fn sweep_clear(m: &ArenaMap, a: Point, b: Point) -> bool {
     }
     true
 }
+pub(crate) fn ground_traversable(m: &ArenaMap, a: Point, b: Point) -> bool {
+    breaks(m, a, b)
+        .windows(2)
+        .all(|pair| multiplier(m, point(a, b, pair[0]), point(a, b, pair[1])) > 0.0)
+}
 pub(crate) fn travel_time(m: &ArenaMap, a: Point, b: Point) -> Option<f64> {
     if !sweep_clear(m, a, b) {
         return None;

@@ -197,8 +197,35 @@ pub struct WeaponDefinition {
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct EditorRules {
+    pub min_dimension: u32,
+    pub max_dimension: u32,
+    pub min_elevation: f64,
+    pub max_elevation: f64,
+    pub max_obstacle_height: f64,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnalysisIssue {
+    pub severity: String,
+    pub message: String,
+    pub unit_id: Option<u32>,
+    pub position: Option<Point>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScenarioAnalysis {
+    pub structural_valid: bool,
+    pub can_start: bool,
+    pub issues: Vec<AnalysisIssue>,
+    pub cells: Vec<TerrainCellInfo>,
+    pub steep_edges: Vec<Point>,
+}
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Catalog {
     pub map: ArenaMap,
+    pub editor_rules: EditorRules,
     pub maps: Vec<MapPreset>,
     pub surfaces: Vec<SurfaceDefinition>,
     pub low_obstacle_height: f64,

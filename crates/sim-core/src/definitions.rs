@@ -136,6 +136,15 @@ fn presets() -> Vec<MapPreset> {
         },
     ]
 }
+pub fn editor_rules() -> EditorRules {
+    EditorRules {
+        min_dimension: 1,
+        max_dimension: 128,
+        min_elevation: -100.0,
+        max_elevation: 100.0,
+        max_obstacle_height: 100.0,
+    }
+}
 pub fn catalog() -> Catalog {
     let maps = presets();
     let terrain_cells = maps
@@ -162,6 +171,7 @@ pub fn catalog() -> Catalog {
         .collect();
     Catalog {
         map: maps[0].map.clone(),
+        editor_rules: editor_rules(),
         maps,
         surfaces: [
             Surface::Open,

@@ -352,3 +352,65 @@ test('preset layouts fit wide and narrow viewports', async ({page}, testInfo) =>
     }
   }
 });
+
+
+test('128 by 128 mixed-terrain protected routes remain responsive through the real Worker', async ({ page }, info) => {
+  test.setTimeout(90_000);
+  await page.goto('/');
+  await page.getByRole('button', {name: /MapMaker/}).click();
+  await expect(page.locator('.maker canvas')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => window.observedWorkers[0]?.received.some(message => message.type === 'ready'))).toBe(true);
+  const document = await page.evaluate(() => {
+    const ready = window.observedWorkers[0].received.find(message => message.type === 'ready');
+    if (!ready || ready.type !== 'ready') throw new Error('Catalog unavailable');
+    const catalog = ready.catalog, width = 128, height = 128;
+    const surfaces = Array.from({length: width * height}, (_, i) => {
+      const x = i % width, y = Math.floor(i / width);
+      return y % 17 === 0 ? 'road' : (x + y) % 11 === 0 ? 'mud' : (x + y) % 13 === 0 ? 'brush' : 'open';
+    });
+    const units = Array.from({length: 16}, (_, i) => ({id:i + 1, faction:i < 8 ? 0 : 1, definitionId:catalog.unit.id,
+      position:{x: i < 8 ? 57.5 : 69.5, y: 55.5 + (i % 8) * 2},
+      doctrine:{...catalog.defaultDoctrine, routePreference:i % 2 ? 'protected' : 'fastest'}}));
+    return {format:'2nd-hand-combat-scenario', schemaVersion:1, name:'Large mixed field', description:'Performance scenario',
+      scenario:{map:{width,height,surfaces,elevations:Array((width + 1) * (height + 1)).fill(0),obstacles:[],patrol:[]},seed:catalog.defaultSeed,factions:[0,1],units,timeLimit:catalog.defaultTimeLimit}};
+  });
+  await page.locator('input[type=file]').setInputFiles({name:'large.json',mimeType:'application/json',buffer:Buffer.from(JSON.stringify(document))});
+  await expect(async () => {
+    const guard = page.getByRole('dialog', {name:'Unsaved changes'});
+    if (await guard.isVisible()) await guard.getByRole('button', {name:'Discard', exact:true}).click();
+    await expect(page.getByLabel('Name', {exact:true})).toHaveValue('Large mixed field');
+  }).toPass({timeout: 30_000});
+  await info.attach('editor-fit', {body:await page.screenshot(), contentType:'image/png'});
+  await page.getByRole('button', {name:'Zoom in'}).click();
+  await info.attach('editor-zoom', {body:await page.screenshot(), contentType:'image/png'});
+  await page.getByRole('button', {name:'Fit map'}).click();
+  await expect(page.getByRole('button', {name:'Test battle'})).toBeEnabled({timeout:30_000});
+  await page.getByRole('button', {name:'Test battle'}).click();
+  await expect(page.getByTestId('battle-status')).toHaveText('SETUP');
+  await expect(page.locator('.field-meta')).toContainText(/128\s*\D\s*128/);
+  await info.attach('battle-fit', {body:await page.screenshot(), contentType:'image/png'});
+  await page.getByRole('button', {name:'Zoom in'}).click();
+  await info.attach('battle-zoom', {body:await page.screenshot(), contentType:'image/png'});
+  await page.getByRole('button', {name:'Fit map'}).click();
+  await page.getByTestId('start-battle').click();
+  await expect(page.getByTestId('battle-status')).toHaveText('RUNNING');
+  const frameGaps = await page.evaluate(() => new Promise<number[]>(resolve => {
+    const gaps: number[] = []; let previous = 0; const start = performance.now();
+    function frame(now: number) { if (previous) gaps.push(now - previous); previous = now; if (now - start < 10_000) requestAnimationFrame(frame); else resolve(gaps); }
+    requestAnimationFrame(frame);
+  }));
+  frameGaps.sort((a,b) => a-b);
+  expect(frameGaps[Math.floor(frameGaps.length * .95)]).toBeLessThan(100);
+  expect(Math.max(...frameGaps)).toBeLessThan(750);
+  const timing = await page.evaluate(() => {
+    const worker = window.observedWorkers.at(-1)!;
+    return worker.received.flatMap((message, i) => message.type === 'snapshot' ? [{tick:message.snapshot.tick, time:worker.times[i]}] : []);
+  });
+  expect(timing.length).toBeGreaterThan(10);
+  const first = timing[0], last = timing.at(-1)!;
+  expect((last.tick-first.tick) / ((last.time-first.time) / 1000)).toBeGreaterThanOrEqual(16);
+  const perTick = timing.slice(1).map((sample,i) => (sample.time-timing[i].time) / Math.max(1,sample.tick-timing[i].tick)).sort((a,b)=>a-b);
+  expect(perTick[Math.floor(perTick.length * .95)]).toBeLessThan(100);
+  const gaps = timing.slice(1).map((sample, i) => sample.time - timing[i].time);
+  expect(Math.max(...gaps)).toBeLessThan(750);
+});

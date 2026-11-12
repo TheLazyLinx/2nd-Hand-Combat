@@ -1,6 +1,6 @@
-import init, { catalog_json, validate_scenario_json, WasmBattle } from './generated/sim_wasm';
+import init, { analyze_scenario_json, catalog_json, validate_scenario_json, WasmBattle } from './generated/sim_wasm';
 import wasmUrl from './generated/sim_wasm_bg.wasm?url';
-import type { Catalog, Snapshot, Validation, WorkerCommand, WorkerReply } from './lib/types';
+import type { Catalog, ScenarioAnalysis, Snapshot, Validation, WorkerCommand, WorkerReply } from './lib/types';
 
 const STEP_MS = 50;
 let initialized = false;
@@ -72,6 +72,11 @@ async function command(message: WorkerCommand) {
     return;
   }
   if (!initialized) throw new Error('The simulation has not initialized.');
+  if (message.type === 'analyze') {
+    const analysis = JSON.parse(analyze_scenario_json(JSON.stringify(message.scenario))) as ScenarioAnalysis;
+    send({ type: 'analysis', requestId: message.requestId, revision: message.revision, analysis });
+    return;
+  }
   if (message.type === 'validate') {
     const validation = JSON.parse(validate_scenario_json(JSON.stringify(message.scenario), message.forStart)) as Validation;
     send({ type: 'validation', requestId: message.requestId, validation });

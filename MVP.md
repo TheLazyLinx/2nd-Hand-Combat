@@ -16,7 +16,7 @@ Demonstrate that changing doctrine produces visible, understandable differences 
 - Elevation includes hills and depressions. Surfaces and directional slope affect movement speed and route cost. Roads and moderate descents can speed movement; mud and steep terrain slow it. Vegetation conceals soldiers, while firing temporarily suppresses that concealment. See [TERRAIN.md](TERRAIN.md).
 - A fixed seed supports repeatable comparisons in one environment. Reset restores the starting scenario including its seed; cross-platform deterministic replay is not established.
 
-Fullscreen and health-indicator preferences last for the app session. Campaign and puzzles are unavailable; no saves or scenario exports are implemented. The current target is desktop Chromium.
+Fullscreen and health-indicator preferences last for the app session. Map Maker creates complete custom scenarios up to 128 × 128, with resizable terrain, soldiers, doctrine, patrol points, browser-library saves, and versioned JSON import/export. Incomplete drafts can be saved; only valid setups can start a battle. Campaign and puzzles are unavailable. The current target is desktop Chromium. See [MAP_MAKER.md](MAP_MAKER.md).
 
 ## Broader first-playable scope
 
@@ -26,6 +26,6 @@ The central success test compares the same starting scenario and seed with diffe
 
 ## Outside the MVP
 
-Campaign currency and progression, puzzles, vehicles, artillery, complex logistics, large-scale command hierarchies, terrain deformation, map importers, multiplayer, LLM controllers, live orders, general doctrine scripting, and advanced replay tools are deferred. Local saves and exportable scenarios remain architectural directions, but are not required to prove the core mechanic.
+Campaign currency and progression, puzzles, vehicles, artillery, complex logistics, large-scale command hierarchies, terrain deformation, external terrain/map-service importers, multiplayer, LLM controllers, live orders, general doctrine scripting, and advanced replay tools are deferred. Local scenario documents and JSON transfer are implemented by Map Maker; campaign saves and replay persistence remain deferred.
 
 Related: [architecture](ARCHITECTURE.md), [scope](SCOPE.md), [scale](SCALE.md), [dream goals](DREAM_GOALS.md).

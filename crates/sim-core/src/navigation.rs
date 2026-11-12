@@ -62,11 +62,59 @@ impl Search {
         preference: RoutePreference,
         revealed: bool,
     ) -> Self {
+        Self::run(map, start, threats, preference, revealed, None)
+    }
+    pub(crate) fn for_targets(
+        map: &ArenaMap,
+        start: Point,
+        threats: &[Point],
+        preference: RoutePreference,
+        revealed: bool,
+        targets: &[Point],
+    ) -> Self {
+        Self::run(map, start, threats, preference, revealed, Some(targets))
+    }
+    fn run(
+        map: &ArenaMap,
+        start: Point,
+        threats: &[Point],
+        preference: RoutePreference,
+        revealed: bool,
+        targets: Option<&[Point]>,
+    ) -> Self {
         let width = map.width as usize;
         let height = map.height as usize;
+        let mut remaining = vec![false; width * height];
+        let mut count = 0;
+        if let Some(targets) = targets {
+            for p in targets {
+                if p.x < 0.0 || p.y < 0.0 {
+                    continue;
+                }
+                let x = p.x.floor() as usize;
+                let y = p.y.floor() as usize;
+                if x < width
+                    && y < height
+                    && !map::blocked(map, center(width, y * width + x))
+                    && !remaining[y * width + x]
+                {
+                    remaining[y * width + x] = true;
+                    count += 1;
+                }
+            }
+        }
         let mut costs = vec![f64::INFINITY; width * height];
         let mut previous = vec![usize::MAX; width * height];
         let mut queue = BinaryHeap::new();
+        if targets.is_some() && count == 0 {
+            return Self {
+                width,
+                start,
+                costs,
+                previous,
+                revealed,
+            };
+        }
         // A cell center or edge midpoint is shared by several edges. Cache the
         // threat exposure at each half-grid coordinate for this search.
         let risk_width = width * 2 + 1;
@@ -92,6 +140,13 @@ impl Search {
         while let Some(Entry { cost, index }) = queue.pop() {
             if cost > costs[index] {
                 continue;
+            }
+            if targets.is_some() && remaining[index] {
+                remaining[index] = false;
+                count -= 1;
+                if count == 0 {
+                    break;
+                }
             }
             let x = (index % width) as i32;
             let y = (index / width) as i32;
@@ -307,7 +362,7 @@ impl Route {
         {
             return;
         }
-        let search = Search::with_threats(map, from, threats, preference, revealed);
+        let search = Search::for_targets(map, from, threats, preference, revealed, &[goal]);
         *self = search.route_with_threats(map, goal, threats, preference);
     }
     pub(crate) fn advance(
@@ -372,6 +427,58 @@ mod tests {
             p = next;
         }
         assert!(p.distance(goal) < 1e-6);
+    }
+    #[test]
+    fn targeted_search_matches_full_weighted_routes_through_detours() {
+        let mut map = arena();
+        map.obstacles.push(Obstacle {
+            x: 3,
+            y: 0,
+            width: 1,
+            height: 4,
+            height_metres: 2.5,
+        });
+        map.surfaces[4 * 7 + 3] = Surface::Mud;
+        let start = Point { x: 1.5, y: 1.5 };
+        let targets = [Point { x: 5.5, y: 1.5 }, Point { x: 5.5, y: 3.5 }];
+        let threats = [Point { x: 6.5, y: 0.5 }];
+        for preference in [RoutePreference::Fastest, RoutePreference::Protected] {
+            let full = Search::with_threats(&map, start, &threats, preference, false);
+            let limited = Search::for_targets(&map, start, &threats, preference, false, &targets);
+            for target in targets {
+                assert_eq!(full.cost(target), limited.cost(target));
+                assert_eq!(full.path(&map, target), limited.path(&map, target));
+            }
+        }
+    }
+    #[test]
+    fn nearby_target_does_not_expand_the_whole_large_map() {
+        let map = ArenaMap::flat(128, 128);
+        let start = Point { x: 57.5, y: 55.5 };
+        let goal = Point { x: 61.5, y: 55.5 };
+        let search =
+            Search::for_targets(&map, start, &[], RoutePreference::Fastest, false, &[goal]);
+        assert!(search.cost(goal).is_some());
+        assert!(search.costs.iter().filter(|cost| cost.is_finite()).count() < 200);
+    }
+    #[test]
+    fn targeted_search_explores_all_reachable_cells_for_unreachable_target() {
+        let mut map = arena();
+        map.obstacles.push(Obstacle {
+            x: 3,
+            y: 0,
+            width: 1,
+            height: 5,
+            height_metres: 2.5,
+        });
+        let start = Point { x: 1.5, y: 1.5 };
+        let targets = [Point { x: 2.5, y: 1.5 }, Point { x: 5.5, y: 1.5 }];
+        let full = Search::with_threats(&map, start, &[], RoutePreference::Fastest, false);
+        let limited =
+            Search::for_targets(&map, start, &[], RoutePreference::Fastest, false, &targets);
+        for target in targets {
+            assert_eq!(full.cost(target), limited.cost(target));
+        }
     }
     #[test]
     fn weighted_search_prefers_faster_surface() {
