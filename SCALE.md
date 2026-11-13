@@ -2,7 +2,7 @@
 
 Status: small initial scope, long-term scaling direction, and proposed measurements. No capacity has been demonstrated.
 
-Source: [Game Architecture Options](https://chatgpt.com/c/6ae4ac8c-6904-83eb-a33e-2944fd754973), 30 October 2026.
+Source: Game Architecture Options planning discussion, 30 October 2026.
 
 ## Initial scale
 

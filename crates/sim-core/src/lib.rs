@@ -1,13 +1,18 @@
 mod battle;
 mod combat;
+mod consumables;
 mod decisions;
 mod definitions;
+mod inventory;
+mod item_actions;
 mod map;
 mod movement;
 mod navigation;
 mod perception;
 mod results;
+mod sustainment;
 mod types;
+mod unit;
 mod validation;
 
 pub use battle::Battle;

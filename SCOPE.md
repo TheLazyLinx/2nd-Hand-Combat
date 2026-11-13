@@ -2,7 +2,7 @@
 
 Status: product direction, with an initial Skirmish slice implemented and broader first-playable work remaining.
 
-Source: [Game Architecture Options](https://chatgpt.com/c/6ae4ac8c-6904-83eb-a33e-2944fd754973), 30 October 2026. This document separates the game's identity from features that remain outside the MVP.
+Source: Game Architecture Options planning discussion, 30 October 2026. This document separates the game's identity from features that remain outside the MVP.
 
 ## Core identity
 
@@ -23,7 +23,7 @@ The central gameplay test is whether changing doctrine produces visible, underst
 - Keep decisions separate from movement and combat execution so future control methods can be added.
 - Allow customization later without implementing a general customization framework in the MVP.
 
-The current slice offers per-soldier engagement distance, fallback health, position preference, and route preference. Broader doctrine presets, triggers, and configuration hierarchy remain open.
+The current slice offers per-soldier engagement distance, fallback health, position and route preferences, grenade and medical rules, and empty-rifle behavior. See [INVENTORY.md](INVENTORY.md). Broader doctrine presets, triggers, and configuration hierarchy remain open.
 
 ## Intended modes
 

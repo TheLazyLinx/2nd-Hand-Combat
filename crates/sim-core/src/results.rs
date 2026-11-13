@@ -1,4 +1,4 @@
-use crate::{perception::Unit, types::*};
+use crate::{types::*, unit::Unit};
 pub(crate) fn evaluate(scenario: &Scenario, units: &[Unit], tick: u32) -> Option<BattleResult> {
     let survivors: Vec<_> = scenario
         .factions

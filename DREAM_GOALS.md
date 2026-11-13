@@ -2,7 +2,7 @@
 
 Status: future ambitions and possibilities. Nothing in this document is an MVP requirement, implementation claim, or delivery promise.
 
-Source: [Game Architecture Options](https://chatgpt.com/c/6ae4ac8c-6904-83eb-a33e-2944fd754973), 30 October 2026. Some ambitions are only mentioned briefly in that conversation; their mechanics remain unspecified.
+Source: Game Architecture Options planning discussion, 30 October 2026. Some ambitions are only mentioned briefly in that discussion; their mechanics remain unspecified.
 
 ## Intended expansion
 

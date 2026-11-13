@@ -18,9 +18,13 @@ Demonstrate that changing doctrine produces visible, understandable differences 
 
 Fullscreen and health-indicator preferences last for the app session. Map Maker creates complete custom scenarios up to 128 × 128, with resizable terrain, soldiers, doctrine, patrol points, browser-library saves, and versioned JSON import/export. Incomplete drafts can be saved; only valid setups can start a battle. Campaign and puzzles are unavailable. The current target is desktop Chromium. See [MAP_MAKER.md](MAP_MAKER.md).
 
+## Soldier inventory
+
+Soldiers carry a fixed loadout with finite rifle ammunition, grenades, medical kits, food, water, and an entrenching tool. Load and needs affect movement; doctrine controls grenade use, medical use, and behavior when rifle ammunition runs out. Reset restores the full starting state. See [INVENTORY.md](INVENTORY.md) for values and action rules.
+
 ## Broader first-playable scope
 
-The committed minimum includes a handful of soldiers on two teams, a handful of weapons with different characteristics, a few configurable behavior rules, and autonomous combat that makes those rules observable. It must be reachable from a browser link without installation. The current slice provides one weapon and four doctrine controls; further weapon variety and usable doctrine presets remain part of the broader goal, not completed features. A simple map generator remains proposed; the current maps are handcrafted.
+The committed minimum includes a handful of soldiers on two teams, a handful of weapons with different characteristics, a few configurable behavior rules, and autonomous combat that makes those rules observable. It must be reachable from a browser link without installation. The inventory slice retains one rifle and adds grenades, medical supplies, food, water, and per-soldier rules for their use. Further weapon variety and usable doctrine presets remain part of the broader goal. A simple map generator remains proposed; the current maps are handcrafted.
 
 The central success test compares the same starting scenario and seed with different doctrine, and checks for an observable, understandable change in behavior. Native Rust simulation tests and browser integration tests exist; their presence alone does not establish acceptance of the full MVP.
 

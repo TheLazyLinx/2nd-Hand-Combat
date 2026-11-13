@@ -6,3 +6,16 @@ apps/web/src/generated/
 test-results/
 playwright-report/
 *.log
+
+# Local credentials and private key material; example environment files may be shared.
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+service-account*.json

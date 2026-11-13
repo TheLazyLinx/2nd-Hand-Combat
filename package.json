@@ -9,6 +9,8 @@
     "build": "node scripts/build-wasm.mjs && vite build --config apps/web/vite.config.ts",
     "preview": "vite preview --config apps/web/vite.config.ts --host 127.0.0.1",
     "check": "svelte-check --workspace apps/web --tsconfig ./tsconfig.json && tsc -p apps/web/tsconfig.worker.json",
+    "check:privacy": "node scripts/check-privacy.mjs",
+    "test:privacy": "node --test tests/privacy.test.mjs",
     "test:rust": "node scripts/tool.mjs cargo test --workspace",
     "lint:rust": "node scripts/tool.mjs cargo clippy --workspace --all-targets -- -D warnings",
     "fmt:check": "node scripts/tool.mjs cargo fmt --all -- --check",

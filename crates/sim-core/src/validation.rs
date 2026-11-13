@@ -1,5 +1,22 @@
 use crate::{map, types::*};
 use std::collections::HashSet;
+fn doctrine_valid(d: &Doctrine) -> bool {
+    let g = &d.grenades;
+    let m = &d.medical;
+    let r = crate::definitions::doctrine_rules();
+    fn valid(v: f64, r: &Rule) -> bool {
+        v.is_finite()
+            && (r.min..=r.max).contains(&v)
+            && (((v - r.min) / r.step).round() - (v - r.min) / r.step).abs() < 1e-8
+    }
+    valid(g.max_distance, &r.grenade_max_distance)
+        && valid(g.min_enemies as f64, &r.grenade_min_enemies)
+        && valid(g.safety_margin, &r.grenade_safety_margin)
+        && g.max_distance > crate::consumables::BLAST_RADIUS + g.safety_margin
+        && valid(m.hp_threshold, &r.medical_hp_threshold)
+        && valid(m.safe_seconds, &r.medical_safe_seconds)
+        && valid(m.cooldown_seconds, &r.medical_cooldown_seconds)
+}
 fn structural_problem(s: &Scenario) -> Option<&'static str> {
     let r = crate::definitions::editor_rules();
     let m = &s.map;
@@ -43,6 +60,9 @@ fn structural_problem(s: &Scenario) -> Option<&'static str> {
         if footprint > area * 4 {
             return Some("The combined obstacle footprint is too large.");
         }
+    }
+    if s.units.iter().any(|u| !doctrine_valid(&u.doctrine)) {
+        return Some("Inventory doctrine values are outside supported ranges or inconsistent.");
     }
     if !s.time_limit.is_finite()
         || s.units.iter().any(|u| {
@@ -493,5 +513,25 @@ mod tests {
             height_metres: 1.0,
         });
         assert!(!validate_scenario(&s, false).valid);
+    }
+    #[test]
+    fn inventory_doctrine_rejects_invalid_steps_and_unsafe_ranges() {
+        let mut s = scenario();
+        s.units.push(UnitPlacement {
+            id: 1,
+            faction: 1,
+            definition_id: "infantry".into(),
+            position: Point { x: 2.5, y: 2.5 },
+            doctrine: crate::catalog().default_doctrine,
+        });
+        s.units[0].doctrine.grenades.max_distance = 2.1;
+        let invalid = validate_scenario(&s, false);
+        assert!(!invalid.valid);
+        assert!(invalid.issues[0].message.contains("Inventory doctrine"));
+        s.units[0].doctrine.grenades.max_distance = 2.0;
+        s.units[0].doctrine.grenades.safety_margin = 0.5;
+        assert!(!analyze_scenario(&s).structural_valid);
+        s.units[0].doctrine.grenades.max_distance = 3.0;
+        assert!(analyze_scenario(&s).structural_valid);
     }
 }

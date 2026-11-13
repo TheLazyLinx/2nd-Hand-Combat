@@ -3,6 +3,7 @@
   import { BattleClient } from '../lib/client';
   import { Battlefield } from '../lib/battlefield';
   import DoctrineEditor from './DoctrineEditor.svelte';
+  import InventoryDisplay from './InventoryDisplay.svelte';
   import { blankDocument, copy, createSession, fingerprint, paint, resizeScenario, type EditorSession, type EditorTool } from '../lib/editor';
   import { listScenarios, saveScenario, deleteScenario, parseScenarioDocument, downloadScenario, MAX_DOCUMENT_BYTES, type SavedScenario } from '../lib/scenario-library';
   import type { Catalog, Doctrine, Point, ScenarioAnalysis, ScenarioDocument, Surface, WorkerReply } from '../lib/types';
@@ -51,10 +52,10 @@
     finally { pending = false; if (!disposed && current !== revision) void analyze(); }
   }
   function receive(message: WorkerReply) {
-    if (message.type === 'ready') { catalog = message.catalog; if (!session) session = createSession(blankDocument(catalog)); width = session.document.scenario.map.width; height = session.document.scenario.map.height; publish(); requestAnalysis(); }
+    if (message.type === 'ready') { catalog = message.catalog; if (!session) session = createSession(blankDocument(catalog)); width = session.document.scenario.map.width; height = session.document.scenario.map.height; publish(); requestAnalysis(); void refresh(); }
     else if (message.type === 'error') error = message.message;
   }
-  async function refresh() { try { saved = await listScenarios(); } catch(e) { error = e instanceof Error ? e.message : String(e); } }
+  async function refresh() { if (!catalog || disposed) return; try { const entries = await listScenarios(catalog.defaultDoctrine); if (!disposed) saved = entries; } catch(e) { if (!disposed) error = e instanceof Error ? e.message : String(e); } }
   onMount(() => {
     let active = true;
     if (session?.settings) ({surface, amount, setValue, obstacleHeight, faction, brushRadius, terrainOverlay} = session.settings);
@@ -62,7 +63,7 @@
     const keydown = (event: KeyboardEvent) => { const target=event.target as HTMLElement; if (target.isContentEditable || ['INPUT','TEXTAREA','SELECT'].includes(target.tagName)) return; if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'z') { event.preventDefault(); if(event.shiftKey) redo(); else undo(); } else if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'y') { event.preventDefault(); redo(); } };
     window.addEventListener('keydown',keydown);
     window.addEventListener('beforeunload', beforeUnload);
-    void (async () => { try { battlefield = new Battlefield(host, () => {}, (x, y) => { inspectX = x; inspectY = y; }); await battlefield.init(); if (!active) return; client = new BattleClient(receive); client.initialize(); await refresh(); } catch(e) { if (active) error = e instanceof Error ? e.message : String(e); } })();
+    void (async () => { try { battlefield = new Battlefield(host, () => {}, (x, y) => { inspectX = x; inspectY = y; }); await battlefield.init(); if (!active) return; client = new BattleClient(receive); client.initialize(); } catch(e) { if (active) error = e instanceof Error ? e.message : String(e); } })();
     return () => { window.removeEventListener('keydown',keydown); window.removeEventListener('beforeunload',beforeUnload); active = false; disposed = true; client?.dispose(); battlefield?.destroy(); };
   });
   function exportDocument() { if (!doc) return; try { downloadScenario(doc); } catch(e) { error=e instanceof Error ? e.message : String(e); } }
@@ -89,7 +90,7 @@
   }
   async function imported(event: Event) {
     const input = event.currentTarget as HTMLInputElement, file = input.files?.[0]; input.value = ''; if (!file) return;
-    try { if (file.size > MAX_DOCUMENT_BYTES) throw new Error('Scenario files must be no larger than 8 MiB.'); const document = parseScenarioDocument(await file.text()); if (!client) throw new Error('Simulation is not ready.'); const result = await client.analyze(document.scenario, revision); if (!result.structuralValid) throw new Error(result.issues.map(issue => issue.message).join(' ')); guard(() => { void importSaved(document); }); }
+    try { if (file.size > MAX_DOCUMENT_BYTES) throw new Error('Scenario files must be no larger than 8 MiB.'); if (!client || !catalog) throw new Error('Simulation is not ready.'); const document = parseScenarioDocument(await file.text(), catalog.defaultDoctrine); const result = await client.analyze(document.scenario, revision); if (!result.structuralValid) throw new Error(result.issues.map(issue => issue.message).join(' ')); guard(() => { void importSaved(document); }); }
     catch(e) { error = e instanceof Error ? e.message : String(e); }
   }
   function changeTool(tool: EditorTool) { if (!session) return; session = {...session, tool, selection: null}; publish(); }
@@ -173,7 +174,7 @@
     {#if selectedUnit || selectedPatrol || selectedObstacle}
       <div class="controls"><strong>Selected position</strong><label>X <input aria-label="Selected X" type="number" step="0.5" value={selectedUnit?.position.x ?? selectedPatrol?.x ?? selectedObstacle?.x} onchange={(e) => moveSelected('x',Number(e.currentTarget.value))}/></label><label>Y <input aria-label="Selected Y" type="number" step="0.5" value={selectedUnit?.position.y ?? selectedPatrol?.y ?? selectedObstacle?.y} onchange={(e) => moveSelected('y',Number(e.currentTarget.value))}/></label></div>
     {/if}
-    {#if selectedUnit}<div class="controls"><label>Selected faction <select aria-label="Selected faction" value={selectedUnit.faction} onchange={(e)=>changeFaction(Number(e.currentTarget.value))}>{#each scenario.factions as side, index}<option value={side}>{index===0 ? 'North' : 'South'}</option>{/each}</select></label></div><DoctrineEditor unit={selectedUnit} busy={false} onClose={() => {if(session) session={...session,selection:null};}} onChange={changeDoctrine} onRemove={removeSelected}/>{/if}
+    {#if selectedUnit}<div class="controls"><label>Selected faction <select aria-label="Selected faction" value={selectedUnit.faction} onchange={(e)=>changeFaction(Number(e.currentTarget.value))}>{#each scenario.factions as side, index}<option value={side}>{index===0 ? 'North' : 'South'}</option>{/each}</select></label></div><DoctrineEditor unit={selectedUnit} {catalog} busy={false} onClose={() => {if(session) session={...session,selection:null};}} onChange={changeDoctrine} onRemove={removeSelected}/><InventoryDisplay {catalog} inventory={catalog.defaultInventory}/>{/if}
     {#if selectedObstacle}<div class="controls"><strong>Obstacle</strong><label>Width <input aria-label="Obstacle width" type="number" min="1" max={scenario.map.width-selectedObstacle.x} value={selectedObstacle.width} onchange={(e)=>sizeObstacle('width',Number(e.currentTarget.value))}/></label><label>Depth <input aria-label="Obstacle depth" type="number" min="1" max={scenario.map.height-selectedObstacle.y} value={selectedObstacle.height} onchange={(e)=>sizeObstacle('height',Number(e.currentTarget.value))}/></label><label>Height (m) <input type="number" min="0.1" max={catalog.editorRules.maxObstacleHeight} step="0.1" value={selectedObstacle.heightMetres} onchange={(e) => {const value=Number(e.currentTarget.value), index=session!.selection!.index; if(Number.isFinite(value) && value>0 && value<=catalog!.editorRules.maxObstacleHeight) edit(d=>{d.scenario.map.obstacles[index].heightMetres=value;});}}/></label><button onclick={removeSelected}>Delete obstacle</button></div>{/if}
     {#if selectedPatrol}<div class="controls"><strong>Patrol point {session.selection!.index+1}</strong><button onclick={() => reorder(-1)}>Move earlier</button><button onclick={() => reorder(1)}>Move later</button><button onclick={removeSelected}>Delete patrol point</button></div>{/if}
     <section aria-label="Validation"><h2>Validation</h2>{#if pending || analyzedRevision !== revision}<p>Checking scenario…</p>{:else if analysis}<p>{analysis.canStart ? 'Ready to test' : analysis.structuralValid ? 'Draft can be saved; resolve issues to test.' : 'Fix structural issues before saving.'}</p>{#each analysis.issues as issue}<p class:error={issue.severity === 'error'}>{issue.severity}: {issue.message}</p>{/each}{/if}</section>

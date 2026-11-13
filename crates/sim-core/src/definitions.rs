@@ -145,6 +145,32 @@ pub fn editor_rules() -> EditorRules {
         max_obstacle_height: 100.0,
     }
 }
+pub(crate) fn rifle() -> WeaponDefinition {
+    WeaponDefinition {
+        id: "rifle".into(),
+        range: RANGE,
+        damage: DAMAGE,
+        hit_chance: HIT_CHANCE,
+        ammo_item_id: "rifle-ammo".into(),
+        cooldown: COOLDOWN,
+    }
+}
+pub(crate) fn weapon(id: &str) -> Option<WeaponDefinition> {
+    (id == "rifle").then(rifle)
+}
+fn rule(min: f64, max: f64, step: f64) -> Rule {
+    Rule { min, max, step }
+}
+pub(crate) fn doctrine_rules() -> DoctrineRules {
+    DoctrineRules {
+        grenade_max_distance: rule(2.0, 6.0, 0.5),
+        grenade_min_enemies: rule(2.0, 8.0, 1.0),
+        grenade_safety_margin: rule(0.0, 2.0, 0.25),
+        medical_hp_threshold: rule(1.0, 99.0, 1.0),
+        medical_safe_seconds: rule(0.0, 30.0, 1.0),
+        medical_cooldown_seconds: rule(1.0, 60.0, 1.0),
+    }
+}
 pub fn catalog() -> Catalog {
     let maps = presets();
     let terrain_cells = maps
@@ -191,20 +217,25 @@ pub fn catalog() -> Catalog {
             name: "Infantry".into(),
             max_hp: MAX_HP,
             speed: SPEED,
+            max_weight_grams: 20000,
+            max_stowed_volume_ml: 15000,
         },
-        weapon: WeaponDefinition {
-            id: "rifle".into(),
-            range: RANGE,
-            damage: DAMAGE,
-            hit_chance: HIT_CHANCE,
-            cooldown: COOLDOWN,
-        },
+        weapon: rifle(),
         default_doctrine: Doctrine {
             engagement_distance: 8.0,
             fallback_hp: 30.0,
             position_preference: PositionPreference::Balanced,
             route_preference: RoutePreference::Fastest,
+            grenades: GrenadeDoctrine::default(),
+            medical: MedicalDoctrine::default(),
+            out_of_ammo_behavior: OutOfAmmoBehavior::default(),
         },
+        items: crate::inventory::items(),
+        item_use_properties: crate::consumables::catalog(),
+        weapons: vec![rifle()],
+        default_loadout: crate::inventory::loadout(),
+        default_inventory: crate::inventory::Inventory::new().snapshot(),
+        doctrine_rules: doctrine_rules(),
         max_per_faction: 8,
         default_time_limit: 180.0,
         default_seed: 1,
