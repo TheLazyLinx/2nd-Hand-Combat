@@ -28,6 +28,9 @@ fn scenario(a: Point, b: Point) -> Scenario {
                     fallback_hp: 0.0,
                     position_preference: PositionPreference::Balanced,
                     route_preference: RoutePreference::Fastest,
+                    grenades: Default::default(),
+                    medical: Default::default(),
+                    out_of_ammo_behavior: Default::default(),
                 },
             },
             UnitPlacement {
@@ -40,6 +43,9 @@ fn scenario(a: Point, b: Point) -> Scenario {
                     fallback_hp: 0.0,
                     position_preference: PositionPreference::Balanced,
                     route_preference: RoutePreference::Fastest,
+                    grenades: Default::default(),
+                    medical: Default::default(),
+                    out_of_ammo_behavior: Default::default(),
                 },
             },
         ],
@@ -178,7 +184,7 @@ fn fallback_uses_safer_cover_before_an_ally() {
     });
     let mut b = Battle::new(s).unwrap();
     // A solid obstacle requires routing around its footprint before reaching protection.
-    run(&mut b, 35);
+    run(&mut b, 50);
     let q = b.snapshot().units[0].position;
     assert!(q.x < 8.5 && q.y < 10.5, "fallback position: {q:?}");
 }

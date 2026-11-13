@@ -27,7 +27,7 @@ Portable JSON documents have this envelope:
 ```json
 {
   "format": "2nd-hand-combat-scenario",
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "name": "My scenario",
   "description": "Optional description",
   "scenario": {
@@ -45,7 +45,9 @@ Portable JSON documents have this envelope:
 }
 ```
 
-This minimal draft has no soldiers and cannot start a battle. The map contains row-major surface cells and vertex elevations, obstacles, and ordered patrol points. Vertex rows have `width + 1` entries. Units contain stable IDs, faction, definition, position, and doctrine. See [TERRAIN.md](TERRAIN.md) for terrain semantics. Export includes unfinished but structurally safe scenarios. Imports create new local records, never silently overwrite an existing one, and pass runtime format checks and Rust structural analysis before use. Unsupported versions and malformed files produce visible errors. Files are limited to 8 MiB. If storing an import fails, it remains open as an unsaved draft for export or testing.
+This minimal draft has no soldiers and cannot start a battle. The map contains row-major surface cells and vertex elevations, obstacles, and ordered patrol points. Vertex rows have `width + 1` entries. Units contain stable IDs, faction, definition, position, and doctrine, including inventory-related rules. See [TERRAIN.md](TERRAIN.md) for terrain semantics. Export includes unfinished but structurally safe scenarios. Imports create new local records, never silently overwrite an existing one, and pass runtime format checks and Rust structural analysis before use. Unsupported versions and malformed files produce visible errors. Files are limited to 8 MiB. If storing an import fails, it remains open as an unsaved draft for export or testing.
+
+Version 1 documents are normalized in memory using current Rust catalog doctrine defaults. Loading does not rewrite them or change the IndexedDB schema; save, rename, duplicate, and export produce version 2. Equipment is not persisted in old documents; soldiers receive the current fixed default loadout. See [INVENTORY.md](INVENTORY.md).
 
 ## Implementation boundaries
 

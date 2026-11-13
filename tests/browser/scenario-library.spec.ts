@@ -12,6 +12,16 @@ function fixture(name = 'Library round trip') {
     },
   };
 }
+async function upgraded(page: Page, document: ReturnType<typeof fixture>) {
+  return page.evaluate(document => {
+    const ready = window.observedWorkers.at(-1)!.received.find(message => message.type === 'ready');
+    if (!ready || ready.type !== 'ready') throw new Error('Catalog unavailable');
+    const defaults = ready.catalog.defaultDoctrine;
+    return {...document, schemaVersion: 2, scenario: {...document.scenario, units: document.scenario.units.map(unit => ({...unit, doctrine: {...unit.doctrine,
+      grenades: structuredClone(defaults.grenades), medical: structuredClone(defaults.medical), outOfAmmoBehavior: defaults.outOfAmmoBehavior,
+    }}))}};
+  }, document);
+}
 async function openMaker(page: Page) {
   await page.goto('/');
   await page.getByRole('button', {name: /02 Map\s?Maker/i}).click();
@@ -47,7 +57,7 @@ test('portable scenarios preserve their authored fields and survive a browser re
   const download = await downloadEvent;
   const path = info.outputPath('scenario.json');
   await download.saveAs(path);
-  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(document);
+  expect(JSON.parse(await readFile(path, 'utf8'))).toEqual(await upgraded(page, document));
   await page.reload();
   await page.getByRole('button', {name: /02 Map\s?Maker/i}).click();
   const entry = page.locator('.library-item').filter({hasText: document.name});
@@ -98,7 +108,7 @@ test('storage transaction failure keeps the unsaved draft exportable', async ({p
 
 test('shrinking clips authored objects and undo restores every scenario field', async ({page}, info) => {
   await openMaker(page);
-  const original = fixture('Resize authored terrain');
+  const original = await upgraded(page, fixture('Resize authored terrain'));
   original.scenario.map.surfaces[9] = 'road';
   original.scenario.map.elevations[10] = -0.2;
   await importFile(page, original);
@@ -120,7 +130,7 @@ test('shrinking clips authored objects and undo restores every scenario field', 
 
 test('layout errors remain portable drafts and fixing the selected soldier enables play', async ({page}, info) => {
   await openMaker(page);
-  const draft = fixture('Blocked soldier draft');
+  const draft = await upgraded(page, fixture('Blocked soldier draft'));
   draft.scenario.units[0].position = {x:3.5,y:3.5};
   await importFile(page, draft);
   await expect(page.getByRole('button',{name:'Test battle'})).toBeDisabled();
@@ -167,7 +177,8 @@ test('a saved full scenario loads through Skirmish and reset restores its detach
   await page.getByTestId('start-battle').click();
   const starts=await page.evaluate(()=>window.observedWorkers.at(-1)!.sent.filter(message=>message.type==='start'));
   expect(starts).toHaveLength(2);
-  for(const start of starts) if(start.type==='start') expect(start.scenario).toEqual(document.scenario);
+  const normalized = await upgraded(page, document);
+  for(const start of starts) if(start.type==='start') expect(start.scenario).toEqual(normalized.scenario);
 });
 
 test('library duplication, rename and confirmed deletion affect only the chosen record', async ({page}) => {
@@ -282,4 +293,128 @@ test('a sparse pointer stroke paints continuously and undo removes the entire ge
   expect(document.scenario.map.surfaces.slice(33,41)).toEqual(Array(8).fill('road'));
   await page.getByRole('button',{name:'Undo',exact:true}).click();
   expect((await exported(page,info.outputPath('pointer-undone.json'))).scenario.map.surfaces.every((value:string)=>value==='open')).toBe(true);
+});
+
+test('inventory doctrines round trip through v2 export and the scenario library', async ({page}, info) => {
+  await openMaker(page);
+  await importFile(page, fixture('Inventory doctrine document'));
+  await page.getByRole('button', {name: '#1 North', exact: true}).click();
+  await expect(page.getByTestId('inventory-load')).toContainText('9.52 / 20.00 kg');
+  await page.getByTestId('selected-unit').getByText('Grenades', {exact: true}).click();
+  await page.getByTestId('grenade-distance').fill('5.5');
+  await page.getByTestId('grenade-enemies').fill('3');
+  await page.getByTestId('grenade-safety').fill('0.75');
+  await page.getByTestId('grenade-policy').selectOption('never');
+  await expect(page.getByTestId('grenade-distance')).toHaveCount(0);
+  await page.getByTestId('grenade-policy').selectOption('clusters');
+  await expect(page.getByTestId('grenade-enemies')).toHaveValue('3');
+  await page.getByTestId('selected-unit').getByText('Medical supplies', {exact: true}).click();
+  await page.getByTestId('medical-hp').fill('65');
+  await page.getByTestId('medical-safe').fill('7');
+  await page.getByTestId('medical-cooldown').fill('12');
+  await page.getByTestId('medical-policy').selectOption('lowHealth');
+  await expect(page.getByTestId('medical-safe')).toHaveCount(0);
+  await page.getByTestId('medical-policy').selectOption('outOfContact');
+  await expect(page.getByTestId('medical-safe')).toHaveValue('7');
+  await page.getByTestId('ammo-behavior').selectOption('continueDoctrine');
+  // Keep the last numeric input focused: exporting must not lose the click to blur validation.
+  await page.getByTestId('medical-cooldown').fill('12');
+  await expect(page.getByText('Ready to test', {exact: true})).toBeVisible();
+  await expect(page.getByRole('button', {name: 'Export', exact: true})).toBeEnabled();
+  const document = await exported(page, info.outputPath('inventory-doctrine-v2.json'));
+  expect(document.schemaVersion).toBe(2);
+  expect(document.scenario.units[0].doctrine).toMatchObject({
+    grenades: {policy: 'clusters', maxDistance: 5.5, minEnemies: 3, safetyMargin: 0.75},
+    medical: {policy: 'outOfContact', hpThreshold: 65, safeSeconds: 7, cooldownSeconds: 12},
+    outOfAmmoBehavior: 'continueDoctrine',
+  });
+  expect(document.scenario.units[0]).not.toHaveProperty('inventory');
+  await page.getByRole('button', {name: 'Save', exact: true}).first().click();
+  await expect(page.getByText('Unsaved changes', {exact: true})).toHaveCount(0);
+  await page.reload();
+  await page.getByRole('button', {name: /02 Map\s?Maker/i}).click();
+  await page.locator('.library-item').filter({hasText: document.name}).getByRole('button', {name: 'Open', exact: true}).click();
+  await page.getByRole('dialog', {name: 'Unsaved changes'}).getByRole('button', {name: 'Discard', exact: true}).click();
+  await expect(page.getByLabel('Name', {exact: true})).toHaveValue(document.name);
+  expect(await exported(page, info.outputPath('inventory-doctrine-reloaded.json'))).toEqual(document);
+  await importFile(page, document);
+  expect(await exported(page, info.outputPath('inventory-doctrine-imported.json'))).toEqual(document);
+});
+
+test('malformed supplied inventory doctrines are rejected without changing the draft', async ({page}) => {
+  await openMaker(page);
+  const originalName = await page.getByLabel('Name', {exact: true}).inputValue();
+  const valid = await upgraded(page, fixture('Invalid doctrine'));
+  const missing = structuredClone(valid);
+  Reflect.deleteProperty(missing.scenario.units[0].doctrine, 'medical');
+  const invalid = structuredClone(valid);
+  invalid.scenario.units[0].doctrine.grenades.maxDistance = 2;
+  invalid.scenario.units[0].doctrine.grenades.safetyMargin = 1;
+  const legacyMalformed = fixture('Malformed legacy doctrine');
+  Object.assign(legacyMalformed.scenario.units[0].doctrine, {grenades: {policy: 'never'}});
+  for (const [document, error] of [[missing, /Medical doctrine/], [invalid, /doctrine|throw|grenade/i], [legacyMalformed, /Maximum throw distance/]] as const) {
+    await page.locator('input[type=file]').setInputFiles({name: 'invalid.json', mimeType: 'application/json', buffer: Buffer.from(JSON.stringify(document))});
+    await expect(page.getByRole('alert')).toContainText(error);
+    await expect(page.getByLabel('Name', {exact: true})).toHaveValue(originalName);
+  }
+});
+
+test('opening a legacy library record upgrades in memory without writing or becoming dirty', async ({page}, info) => {
+  await openMaker(page);
+  const legacy = fixture('Legacy stored inventory scenario');
+  await page.evaluate(document => new Promise<void>((resolve, reject) => {
+    const request = indexedDB.open('2nd-hand-combat', 1);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result, tx = db.transaction('scenarios', 'readwrite');
+      tx.objectStore('scenarios').put({id: 'legacy-inventory', updatedAt: '2026-01-01T00:00:00.000Z', document});
+      tx.oncomplete = () => { db.close(); resolve(); };
+      tx.onerror = () => { db.close(); reject(tx.error); };
+    };
+  }), legacy);
+  await page.reload();
+  await page.getByRole('button', {name: /02 Map\s?Maker/i}).click();
+  await page.locator('.library-item').filter({hasText: legacy.name}).getByRole('button', {name: 'Open', exact: true}).click();
+  await page.getByRole('dialog', {name: 'Unsaved changes'}).getByRole('button', {name: 'Discard', exact: true}).click();
+  await expect(page.getByLabel('Name', {exact: true})).toHaveValue(legacy.name);
+  await expect(page.getByText('Unsaved changes', {exact: true})).toHaveCount(0);
+  expect(await exported(page, info.outputPath('legacy-upgraded-v2.json'))).toEqual(await upgraded(page, legacy));
+  const stored = await page.evaluate(() => new Promise<{document: unknown; updatedAt: string}>((resolve, reject) => {
+    const request = indexedDB.open('2nd-hand-combat', 1);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result, tx = db.transaction('scenarios', 'readonly');
+      const entry = tx.objectStore('scenarios').get('legacy-inventory');
+      tx.oncomplete = () => { db.close(); resolve(entry.result); };
+      tx.onerror = () => { db.close(); reject(tx.error); };
+    };
+  }));
+  expect(stored.document).toEqual(legacy);
+  expect(stored.updatedAt).toBe('2026-01-01T00:00:00.000Z');
+  await page.getByRole('button', {name: 'Save', exact: true}).first().click();
+  await expect.poll(() => page.evaluate(() => new Promise<number>((resolve, reject) => {
+    const request = indexedDB.open('2nd-hand-combat', 1);
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const db = request.result, tx = db.transaction('scenarios', 'readonly');
+      const entry = tx.objectStore('scenarios').get('legacy-inventory');
+      tx.oncomplete = () => { db.close(); resolve(entry.result.document.schemaVersion); };
+      tx.onerror = () => { db.close(); reject(tx.error); };
+    };
+  }))).toBe(2);
+});
+
+test('legacy upgrades preserve supplied valid inventory doctrine and fill only absent settings', async ({page}, info) => {
+  await openMaker(page);
+  const legacy = fixture('Partly extended legacy doctrine');
+  const grenades = {policy: 'anySafeTarget', maxDistance: 4.5, minEnemies: 4, safetyMargin: 0.5};
+  Object.assign(legacy.scenario.units[0].doctrine, {grenades});
+  await importFile(page, legacy);
+  const document = await exported(page, info.outputPath('partly-extended-legacy.json'));
+  const defaults = await upgraded(page, fixture());
+  expect(document.schemaVersion).toBe(2);
+  expect(document.scenario.units[0].doctrine.grenades).toEqual(grenades);
+  expect(document.scenario.units[0].doctrine.medical).toEqual(defaults.scenario.units[0].doctrine.medical);
+  expect(document.scenario.units[0].doctrine.outOfAmmoBehavior).toBe(defaults.scenario.units[0].doctrine.outOfAmmoBehavior);
+  expect(document.scenario.units[0].doctrine.engagementDistance).toBe(6);
 });

@@ -2,7 +2,7 @@
 
 Status: committed direction and current Skirmish implementation, with future choices identified below.
 
-Source: [Game Architecture Options](https://chatgpt.com/c/6ae4ac8c-6904-83eb-a33e-2944fd754973), 30 October 2026. The final Rust/WebAssembly direction supersedes the earlier proposal to start the simulation in TypeScript and migrate later. Supporting tools below reflect the latest recommended baseline; preferences and unresolved choices are identified separately.
+Source: Game Architecture Options planning discussion, 30 October 2026. The final Rust/WebAssembly direction supersedes the earlier proposal to start the simulation in TypeScript and migrate later. Supporting tools below reflect the latest recommended baseline; preferences and unresolved choices are identified separately.
 
 ## Committed direction
 
@@ -51,7 +51,7 @@ Keep perception, doctrine evaluation, and intentions separate from the movement 
 ## Data and execution
 
 - Use entity IDs and composable, data-oriented state rather than a deep soldier/vehicle class hierarchy.
-- Separate static weapon and doctrine definitions from changing unit state.
+- Separate static equipment and doctrine definitions from changing unit state. Inventory and needs belong to units, separate from perception; decisions choose actions and execution applies them.
 - Use faction IDs rather than a fixed two-team boolean; the MVP still presents only two teams.
 - Use a fixed simulation timestep independent of rendering frequency.
 - Use seeded randomness to support repeatable scenarios and doctrine comparisons. Cross-platform determinism still requires verification.
@@ -71,7 +71,7 @@ Keep perception, doctrine evaluation, and intentions separate from the movement 
 
 The current implementation uses three handcrafted map presets and explicit Rust structures. Maps contain row-major surface cells, vertex elevations, and rectangular solid obstacles with heights relative to the ground. Each cell is triangulated along its northwest-to-southeast diagonal. Shared Rust queries resolve physical sight, directional shot exposure, vegetation spotting, swept-radius traversal, and travel time; the renderer only displays their results. See [TERRAIN.md](TERRAIN.md) for the rules and initial tuning.
 
-Navigation uses deterministic eight-neighbour weighted searches and cached per-unit routes. A decision reuses one search when comparing candidate positions and skips it when no candidate improves the current position. Protected searches memoize repeated exposure samples and prune edges using travel-time lower bounds. Protected routing considers observed threats and per-enemy last sightings, without reading unseen enemy positions. Movement consumes a fixed-step time budget across surface and triangle boundaries. Combat rechecks visibility after movement; simultaneous fire and damage use the same pre-fire reveal state.
+Navigation uses deterministic eight-neighbour weighted searches and cached per-unit routes. A decision reuses one search when comparing candidate positions and skips it when no candidate improves the current position. Protected searches memoize repeated exposure samples and prune edges using travel-time lower bounds. Protected routing considers observed threats and per-enemy last sightings, without reading unseen enemy positions. Movement consumes a fixed-step time budget across surface and triangle boundaries. Load and needs scale that budget uniformly without changing route topology; see [INVENTORY.md](INVENTORY.md). Combat rechecks visibility after movement; simultaneous fire and damage use the same pre-fire reveal state.
 
 The catalog sends static maps, surface definitions, and supported editor limits during initialization. Bulk Rust scenario analysis supplies readouts for the actual edited or selected map, located issues, and start readiness. Structurally safe drafts may retain layout errors; malformed structures never reach terrain queries. Editor revisions guard asynchronous analysis results. Snapshots include live unit terrain status and protection relative to the current target. Static map data is not repeated in snapshots. Pixi caches static terrain at bounded display resolution, invalidating it when maps, overlays, or scale change. Dense slope warnings are grouped at display resolution, and contour density adapts to large elevation ranges. Searches for known destinations stop once those destinations are settled, preserving full-map detours and weighted route costs. A native benchmark runner remains future work.
 
@@ -87,5 +87,7 @@ Map Maker edits portable scenario documents separately from live simulation stat
 - Hosting provider, dependency versions, and supported browser/device matrix.
 
 Do not implement campaign services, map importers, multiplayer, LLM integration, terrain deformation, or large-scale simulation machinery merely to preserve the possibility of adding them.
+
+Soldier inventory uses fixed starting equipment, bounded weight and volume, and one action per soldier per tick. The catalog and snapshots carry inventory information in bulk. Scenario schema version 2 records the added doctrine; version 1 is normalized in memory from Rust catalog defaults without automatic writes or an IndexedDB schema change. See [INVENTORY.md](INVENTORY.md).
 
 Related: [scope](SCOPE.md), [scale](SCALE.md), [MVP](MVP.md), [dream goals](DREAM_GOALS.md).

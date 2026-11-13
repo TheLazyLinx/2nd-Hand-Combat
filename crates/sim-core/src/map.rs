@@ -106,7 +106,7 @@ fn rect_interval(a: Point, b: Point, x0: f64, y0: f64, x1: f64, y1: f64) -> Opti
     }
     Some((lo, hi))
 }
-fn visible(m: &ArenaMap, a: Point, b: Point, ah: f64, bh: f64) -> bool {
+pub(crate) fn visible(m: &ArenaMap, a: Point, b: Point, ah: f64, bh: f64) -> bool {
     let za = ground_height(m, a) + ah;
     let zb = ground_height(m, b) + bh;
     let cuts = breaks(m, a, b);

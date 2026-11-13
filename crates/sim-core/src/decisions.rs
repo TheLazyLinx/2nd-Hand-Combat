@@ -1,4 +1,4 @@
-use crate::{map, navigation, perception::Unit, types::*};
+use crate::{map, navigation, types::*, unit::Unit};
 
 pub(crate) struct DecisionInput<'a> {
     pub unit: &'a Unit,
@@ -35,7 +35,7 @@ pub(crate) fn decide(input: &DecisionInput<'_>, map: &ArenaMap, faction_index: u
         patrol_index,
         route,
     };
-    if me.is_low_hp() {
+    if me.withdrawing() {
         let Some(enemy) = threat else {
             return decision(Behavior::Defending, None, None, me.patrol_index, None);
         };
@@ -347,7 +347,7 @@ pub(crate) fn decide(input: &DecisionInput<'_>, map: &ArenaMap, faction_index: u
 #[cfg(test)]
 mod acceptance_tests {
     use super::*;
-    use crate::{definitions::catalog, perception::Memory};
+    use crate::{definitions::catalog, unit::Memory};
     fn p(x: f64, y: f64) -> Point {
         Point { x, y }
     }
@@ -518,5 +518,18 @@ mod acceptance_tests {
             }
             assert!(pos.distance(goal) < 0.001);
         }
+    }
+    #[test]
+    fn empty_ammunition_withdrawal_depends_on_doctrine() {
+        let map = arena();
+        let mut u = unit(p(5.5, 5.5));
+        for _ in 0..60 {
+            u.inventory.consume("rifle-ammo").unwrap();
+        }
+        let retreat = choose(&u, &map, Some(p(10.5, 5.5)));
+        assert_eq!(retreat.behavior, Behavior::FallingBack);
+        u.placement.doctrine.out_of_ammo_behavior = OutOfAmmoBehavior::ContinueDoctrine;
+        let continued = choose(&u, &map, Some(p(10.5, 5.5)));
+        assert_eq!(continued.behavior, Behavior::Engaging);
     }
 }

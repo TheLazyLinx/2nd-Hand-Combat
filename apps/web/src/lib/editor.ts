@@ -18,7 +18,7 @@ export function createSession(document: ScenarioDocument, savedId: string | null
   return { document: copy(document), savedId, savedSnapshot: savedId ? fingerprint(document) : null, undo: [], redo: [], tool: 'surface', selection: null, camera: null };
 }
 export function blankDocument(catalog: Catalog, width = 32, height = 20): ScenarioDocument {
-  return { format: '2nd-hand-combat-scenario', schemaVersion: 1, name: 'Untitled scenario', description: '', scenario: { map: {width, height, surfaces: Array(width * height).fill('open') as Surface[], elevations: Array((width + 1) * (height + 1)).fill(0) as number[], obstacles: [], patrol: []}, seed: catalog.defaultSeed, factions: [0, 1], units: [], timeLimit: catalog.defaultTimeLimit } };
+  return { format: '2nd-hand-combat-scenario', schemaVersion: 2, name: 'Untitled scenario', description: '', scenario: { map: {width, height, surfaces: Array(width * height).fill('open') as Surface[], elevations: Array((width + 1) * (height + 1)).fill(0) as number[], obstacles: [], patrol: []}, seed: catalog.defaultSeed, factions: [0, 1], units: [], timeLimit: catalog.defaultTimeLimit } };
 }
 export function resizeMap(map: ArenaMap, width: number, height: number): ArenaMap {
   const surfaces: Surface[] = [], elevations: number[] = [];

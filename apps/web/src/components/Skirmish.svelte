@@ -5,6 +5,7 @@
   import { listScenarios, type SavedScenario } from '../lib/scenario-library';
   import FactionPanel from './FactionPanel.svelte';
   import DoctrineEditor from './DoctrineEditor.svelte';
+  import InventoryDisplay from './InventoryDisplay.svelte';
   import UnitPicker from './UnitPicker.svelte';
   import Results from './Results.svelte';
   import type { BattleResult, Catalog, Doctrine, Scenario, Snapshot, UnitPlacement, WorkerReply } from '../lib/types';
@@ -60,7 +61,8 @@
       catalog = message.catalog;
       mapId = initialDocument ? 'editor' : catalog.maps[0]?.id ?? '';
       description = initialDocument?.description ?? catalog.maps[0]?.description ?? '';
-      listScenarios().then(items => { saved = items; }).catch(e => { error = e instanceof Error ? e.message : String(e); });
+      const current = generation;
+      listScenarios(catalog.defaultDoctrine).then(items => { if (current === generation) saved = items; }).catch(e => { if (current === generation) error = e instanceof Error ? e.message : String(e); });
       scenario = initialDocument ? copy(initialDocument.scenario) : { map: copy(catalog.map), seed: catalog.defaultSeed, factions: [0, 1], units: [], timeLimit: catalog.defaultTimeLimit };
       snapshot = null; result = null; selected = null; placement = null; phase = 'setup'; error = '';
     } else if (message.type === 'snapshot') {
@@ -203,10 +205,12 @@
             onSelect={(id) => { selected = id; placement = null; }}
             onAdd={() => { modalFaction = faction; placement = null; }} />
         {/each}
-        {#if selectedUnit && phase === 'setup'}
-          <DoctrineEditor unit={selectedUnit} {busy} onClose={() => selected = null} onChange={doctrine} onRemove={removeUnit} />
-        {:else if selectedUnit && selectedState}
-          <section class="editor" data-testid="unit-terrain-status"><h3>Infantry #{selectedUnit.id}</h3><p>{selectedState.terrain.surface} | elevation {selectedState.terrain.elevation.toFixed(1)} m | movement x{selectedState.terrain.movementMultiplier.toFixed(2)}</p><p>{selectedState.terrain.revealed ? 'Revealed' : 'Not revealed'} | {selectedState.terrain.protection === null ? 'No current target' : `${Math.round(selectedState.terrain.protection * 100)}% directional protection against target #${selectedState.targetId}`}</p></section>
+        {#if catalog && selectedUnit && phase === 'setup'}
+          <DoctrineEditor unit={selectedUnit} {catalog} {busy} onClose={() => selected = null} onChange={doctrine} onRemove={removeUnit} />
+          <InventoryDisplay {catalog} inventory={catalog.defaultInventory} />
+        {:else if catalog && selectedUnit && selectedState}
+          <section class="editor" data-testid="unit-terrain-status"><h3>Infantry #{selectedUnit.id}</h3><p>{selectedState.terrain.surface} | elevation {selectedState.terrain.elevation.toFixed(1)} m | Actual movement x{selectedState.terrain.movementMultiplier.toFixed(2)}</p><p>{selectedState.terrain.revealed ? 'Revealed' : 'Not revealed'} | {selectedState.terrain.protection === null ? 'No current target' : `${Math.round(selectedState.terrain.protection * 100)}% directional protection against target #${selectedState.targetId}`}</p></section>
+          <InventoryDisplay {catalog} inventory={selectedState.inventory} live={selectedState} />
         {/if}
       </aside>
     </div>

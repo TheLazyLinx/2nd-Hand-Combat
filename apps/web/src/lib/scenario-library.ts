@@ -1,4 +1,4 @@
-import type { ScenarioDocument } from './types';
+import type { Doctrine, ScenarioDocument } from './types';
 
 export interface SavedScenario {
   id: string;
@@ -33,14 +33,36 @@ function text(value: unknown, label: string, maximum: number, required = false):
   if (typeof value !== 'string' || value.length > maximum || (required && !value.trim())) throw new Error(`${label} must ${required ? 'be non-empty and ' : ''}contain at most ${maximum} characters.`);
 }
 
-/** Checks the portable JSON contract; Rust separately decides structural and gameplay validity. */
-export function parseScenarioDocument(json: string): ScenarioDocument {
+/** Upgrade only absent legacy fields. Supplied values must pass the same checks as v2. */
+function inventoryDoctrine(doctrine: Record<string, unknown>, legacy: boolean, defaults?: Doctrine) {
+  function introduced(key: 'grenades' | 'medical' | 'outOfAmmoBehavior'): unknown {
+    if (doctrine[key] !== undefined || !legacy) return doctrine[key];
+    if (!defaults) throw new Error('The simulation catalog is required to open legacy scenarios.');
+    return structuredClone(defaults[key]);
+  }
+  const grenades = record(introduced('grenades'), 'Grenade doctrine');
+  if (!['never', 'clusters', 'anySafeTarget', 'emptyRifleOnly'].includes(grenades.policy as string)) throw new Error('Unknown grenade policy.');
+  finite(grenades.maxDistance, 'Maximum throw distance');
+  uint(grenades.minEnemies, 'Minimum grenade cluster size');
+  finite(grenades.safetyMargin, 'Grenade safety margin');
+  const medical = record(introduced('medical'), 'Medical doctrine');
+  if (!['never', 'outOfContact', 'lowHealth'].includes(medical.policy as string)) throw new Error('Unknown medical policy.');
+  finite(medical.hpThreshold, 'Treatment health threshold');
+  finite(medical.safeSeconds, 'Treatment safe interval');
+  finite(medical.cooldownSeconds, 'Treatment cooldown');
+  const outOfAmmoBehavior = introduced('outOfAmmoBehavior');
+  if (!['withdraw', 'continueDoctrine'].includes(outOfAmmoBehavior as string)) throw new Error('Unknown empty-rifle behavior.');
+  return {...doctrine, grenades, medical, outOfAmmoBehavior};
+}
+
+/** Checks portable structure and upgrades v1 in memory; Rust decides numeric limits and readiness. */
+export function parseScenarioDocument(json: string, defaultDoctrine?: Doctrine): ScenarioDocument {
   if (new TextEncoder().encode(json).byteLength > MAX_DOCUMENT_BYTES) throw new Error('Scenario files must be no larger than 8 MiB.');
   let parsed: unknown;
   try { parsed = JSON.parse(json); } catch { throw new Error('This file is not valid scenario JSON.'); }
   const doc = record(parsed, 'Scenario document');
   if (doc.format !== '2nd-hand-combat-scenario') throw new Error('This file is not a 2nd Hand Combat scenario.');
-  if (doc.schemaVersion !== 1) throw new Error('This scenario version is not supported.');
+  if (doc.schemaVersion !== 1 && doc.schemaVersion !== 2) throw new Error('This scenario version is not supported.');
   text(doc.name, 'Scenario name', 100, true);
   const description = doc.description === undefined ? '' : doc.description;
   text(description, 'Description', 2000);
@@ -58,7 +80,7 @@ export function parseScenarioDocument(json: string): ScenarioDocument {
     for (const key of ['x', 'y', 'width', 'height']) uint(obstacle[key], `Obstacle ${key}`);
     finite(obstacle.heightMetres, 'Obstacle height');
   });
-  list(scenario.units, 'Units').forEach(value => {
+  const units = list(scenario.units, 'Units').map(value => {
     const unit = record(value, 'Soldier');
     uint(unit.id, 'Soldier ID'); uint(unit.faction, 'Soldier faction');
     text(unit.definitionId, 'Soldier definition', 100, true);
@@ -67,9 +89,10 @@ export function parseScenarioDocument(json: string): ScenarioDocument {
     finite(doctrine.engagementDistance, 'Engagement distance'); finite(doctrine.fallbackHp, 'Fallback health');
     if (!['balanced', 'cover', 'concealment'].includes(doctrine.positionPreference as string)) throw new Error('Unknown position preference.');
     if (!['fastest', 'protected'].includes(doctrine.routePreference as string)) throw new Error('Unknown route preference.');
+    return {...unit, doctrine: inventoryDoctrine(doctrine, doc.schemaVersion === 1, defaultDoctrine)};
   });
   // Parsing makes a detached plain-data document. Unknown metadata has no executable behavior.
-  return { format: '2nd-hand-combat-scenario', schemaVersion: 1, name: doc.name, description, scenario: scenario as unknown as ScenarioDocument['scenario'] };
+  return { format: '2nd-hand-combat-scenario', schemaVersion: 2, name: doc.name, description, scenario: {...scenario, units} as unknown as ScenarioDocument['scenario'] };
 }
 
 function openDatabase(): Promise<IDBDatabase> {
@@ -104,12 +127,12 @@ async function transaction<T>(mode: IDBTransactionMode, operation: (store: IDBOb
   });
 }
 
-export async function listScenarios(): Promise<SavedScenario[]> {
+export async function listScenarios(defaultDoctrine: Doctrine): Promise<SavedScenario[]> {
   const entries = await transaction<unknown[]>('readonly', store => store.getAll());
   return entries.map(value => {
     const entry = record(value, 'Saved scenario');
     text(entry.id, 'Saved scenario ID', 100, true); text(entry.updatedAt, 'Modification time', 100, true);
-    const document = parseScenarioDocument(JSON.stringify(entry.document));
+    const document = parseScenarioDocument(JSON.stringify(entry.document), defaultDoctrine);
     return {id: entry.id, updatedAt: entry.updatedAt, document};
   }).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
 }

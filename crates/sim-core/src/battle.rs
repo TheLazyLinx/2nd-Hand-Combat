@@ -1,7 +1,7 @@
 use crate::{
-    decisions,
-    perception::{self, Memory, ThreatMemory, Unit},
+    decisions, perception,
     types::*,
+    unit::{Memory, ThreatMemory, Unit},
     validation::validate_scenario,
 };
 
@@ -26,11 +26,6 @@ impl Battle {
         let mut units: Vec<_> = scenario.units.iter().cloned().map(Unit::new).collect();
         units.sort_by_key(|u| u.placement.id);
         for u in &mut units {
-            u.movement_multiplier = crate::definitions::surface_definition(crate::map::surface(
-                &scenario.map,
-                u.position,
-            ))
-            .movement_multiplier;
             if !scenario.map.patrol.is_empty() {
                 u.patrol_index = (u.placement.id as usize) % scenario.map.patrol.len();
             }
@@ -48,6 +43,9 @@ impl Battle {
             return;
         }
         self.tick += 1;
+        for u in &mut self.units {
+            crate::sustainment::advance(u);
+        }
         // Sight is refreshed every tick independently for each living unit.
         let observations: Vec<_> = (0..self.units.len())
             .map(|i| {
@@ -61,6 +59,9 @@ impl Battle {
         for (i, seen) in observations.iter().enumerate() {
             if self.units[i].hp <= 0.0 {
                 continue;
+            }
+            if !seen.is_empty() {
+                self.units[i].last_contact = self.tick;
             }
             let previous_target = self.units[i].target;
             // Unit storage is ID-sorted, so the known-threat order remains stable as distances change.
@@ -200,6 +201,15 @@ impl Battle {
                     behavior: u.behavior.clone(),
                     target_id: u.target,
                     shots_fired: u.shots,
+                    inventory: u.inventory.snapshot(),
+                    sustainment: Sustainment {
+                        nutrition: u.nutrition,
+                        hydration: u.hydration,
+                        needs_factor: u.needs_factor(),
+                        nutrition_shortage: crate::sustainment::shortage(u.nutrition),
+                        hydration_shortage: crate::sustainment::shortage(u.hydration),
+                    },
+                    mobility_factor: u.inventory.load_factor() * u.needs_factor(),
                     terrain: TerrainStatus {
                         surface: crate::map::surface(&self.scenario.map, u.position),
                         elevation: crate::map::ground_height(&self.scenario.map, u.position),
@@ -250,6 +260,9 @@ mod tests {
                 fallback_hp: 0.0,
                 position_preference: PositionPreference::Balanced,
                 route_preference: RoutePreference::Fastest,
+                grenades: GrenadeDoctrine::default(),
+                medical: MedicalDoctrine::default(),
+                out_of_ammo_behavior: OutOfAmmoBehavior::default(),
             },
         };
         let scenario = Scenario {
@@ -292,6 +305,9 @@ mod tests {
                 fallback_hp: 0.0,
                 position_preference: PositionPreference::Balanced,
                 route_preference: RoutePreference::Fastest,
+                grenades: GrenadeDoctrine::default(),
+                medical: MedicalDoctrine::default(),
+                out_of_ammo_behavior: OutOfAmmoBehavior::default(),
             },
         };
         Battle::new(Scenario {
@@ -404,5 +420,49 @@ mod tests {
         battle.units[0].position = Point { x: 2.5, y: 5.5 };
         battle.step();
         assert!(battle.units[0].threat_memories.iter().all(|m| m.id != 2));
+    }
+    #[test]
+    fn long_battle_consumes_supplies_repeatably_then_terminal_state_freezes() {
+        let mut battle = test_battle();
+        assert!(battle
+            .snapshot()
+            .units
+            .iter()
+            .all(|unit| unit.terrain.movement_multiplier == 0.0));
+        battle.scenario.map.patrol.clear();
+        battle.scenario.time_limit = 200.0;
+        let mut replay = Battle::new(battle.scenario.clone()).unwrap();
+        for _ in 0..4000 {
+            battle.step();
+            replay.step();
+        }
+        let terminal = battle.snapshot();
+        assert_eq!(terminal, replay.snapshot());
+        assert_eq!(terminal.result.as_ref().unwrap().reason, "timeout");
+        for unit in &terminal.units {
+            assert_eq!(unit.hp, 100.0);
+            assert_eq!(unit.shots_fired, 0);
+            assert_eq!(unit.inventory.weight_grams, 7520);
+            assert_eq!(unit.inventory.stowed_volume_ml, 3900);
+            assert_eq!(unit.sustainment.hydration, 0.0);
+            assert!((unit.sustainment.nutrition - 80.0).abs() < 1e-7);
+            assert!(unit.sustainment.hydration_shortage);
+            assert!((unit.mobility_factor - 0.65025).abs() < 1e-7);
+            for id in ["ration", "water"] {
+                assert_eq!(
+                    unit.inventory
+                        .uses
+                        .iter()
+                        .find(|used| used.item_id == id)
+                        .unwrap()
+                        .count,
+                    2
+                );
+            }
+        }
+        for _ in 0..20 {
+            battle.step();
+        }
+        assert_eq!(battle.snapshot(), terminal);
     }
 }

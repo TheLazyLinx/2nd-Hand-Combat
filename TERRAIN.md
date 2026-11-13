@@ -14,7 +14,7 @@ Maps contain width × height surface cells and (width + 1) × (height + 1) eleva
 | Brush | 0.80 | 2 | 1.8 m |
 | Woodland | 0.70 | 3 | 3 m |
 
-All gameplay values live in Rust. The browser receives surface definitions and cell readouts through the catalog. Elevation shading and interpolated contour lines are presentation only. Cell inspection shows surface movement cost; a moving soldier's status includes its current movement effect.
+All gameplay values live in Rust. The browser receives surface definitions and cell readouts through the catalog. Elevation shading and interpolated contour lines are presentation only. Cell inspection shows surface movement cost; a moving soldier's status includes its current movement effect from terrain, load, and needs.
 
 ## Sight, cover, and concealment
 
@@ -26,11 +26,13 @@ Spotting has a 14-unit maximum distance and budget. Distance inside vegetation c
 
 Soldiers independently observe enemies and retain each enemy's last-known position for about ten seconds. Routing considers all those known threats; investigation follows the latest selected target's sighting. Unseen enemies never update remembered positions, and sightings are not shared. Acquiring or losing a target interrupts the usual decision interval. Combat rechecks visibility after movement. All shooters use the same pre-fire reveal state; firing reveal and simultaneous damage apply after those checks.
 
+Grenade throws require a clear straight path from eye height. Terrain and solid obstacles block blast paths; vegetation does not. See [INVENTORY.md](INVENTORY.md) for blast and friendly safety rules.
+
 ## Travel and doctrine
 
 Base speed is 2 m/s. Grade is signed elevation change divided by horizontal distance within each traversed triangle. Uphill speed is multiplied by `1 / (1 + 2 × grade)`. Descent through 20% grade increases speed linearly to 1.15. From 20% to 60% descent the multiplier decreases linearly to 0.55. Grades above 60% are impassable in either direction. Surface and slope multipliers multiply, with an overall cap of 1.30.
 
-Movement spends the fixed 0.05-second step across each encountered surface and triangle boundary. Routing uses these same travel times, eight neighbours, swept 0.25 m soldier clearance, deterministic ties, and no obstacle corner cutting. A direct route is used only when valid and no slower than the computed fastest route. Routes are cached until the destination, route preference, or known threats materially change.
+Movement spends the fixed 0.05-second step across each encountered surface and triangle boundary. Load and needs scale that movement budget uniformly without changing route topology; see [INVENTORY.md](INVENTORY.md). Routing uses these same travel times, eight neighbours, swept 0.25 m soldier clearance, deterministic ties, and no obstacle corner cutting. A direct route is used only when valid and no slower than the computed fastest route. Routes are cached until the destination, route preference, or known threats materially change.
 
 - **Fastest** minimizes travel time, including terrain effects.
 - **Protected** multiplies edge time by `1 + 2 × exposure`, using maximum exposure along the edge and across known threats. Exposure combines physical shot exposure and detectability. Hidden enemies supply no information.
