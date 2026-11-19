@@ -1,6 +1,6 @@
 # Improvement Plan
 
-Status: in progress (updated 19 November 2026 against `main` `dd945eb`, after merging `feature/inventory`). Phases 0A and 0B are complete. Approved decisions are recorded in [Decisions](#decisions) at the end.
+Status: in progress (updated 19 November 2026 against `main` `0acc5c8`). Phase 0 (0A, 0B, 0C, 0D) is complete; Phase 1 is next. Approved decisions are recorded in [docs/decisions/](docs/decisions/README.md) and summarized in [Decisions](#decisions) at the end.
 
 This file is the single tracker for this work. Agents check off items in the same change that completes them.
 
@@ -14,18 +14,37 @@ This file is the single tracker for this work. Agents check off items in the sam
 
 Guardrail ([AGENTS.md](AGENTS.md) rule 9): future-proofing means **data shapes, boundaries, and verification**, not unrequested features. Do not add an alliance UI, loadout editor UI, ECS library, worker threads, or shared memory until a later task asks for them or measurements require them.
 
-## Baseline (`dd945eb`, native release, 8 v 8, Cover doctrine)
+## Baseline (`0acc5c8` + `sim-bench`, native release, 8 v 8, Cover doctrine)
 
-| Map | Mean step | Worst step | Steps > 50 ms |
-| --- | ---: | ---: | ---: |
-| 32 × 20 presets (Fastest) | 0.25–0.58 ms | 19.1–31.5 ms | 0 |
-| 32 × 20 presets (Protected) | 0.25–4.41 ms | 28.7–50.0 ms | 0 (up to 73 ms on noisy run) |
-| 128 × 128 open | 0.33–0.81 ms | 388–392 ms | 1–2 |
-| 128 × 128, 1,500 1 × 1 obstacles | 66.5–66.8 ms | 31,539–31,642 ms | 5 (stopped at 40 s wall time) |
+Recorded from `npm run bench:rust` (`crates/sim-bench`, 40 s wall-time cap per scenario, 3,600-step limit):
+
+| Scenario | Steps | Mean (ms) | p99 (ms) | Worst (ms) | >50 ms | Result |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| `training-fastest` | 746 | 0.543 | 11.99 | 31.16 | 0 | elimination |
+| `training-protected` | 477 | 4.203 | 42.36 | 59.40 | 1 | elimination |
+| `ridge-fastest` | 3600 | 0.252 | 4.76 | 28.86 | 0 | timeout |
+| `ridge-protected` | 941 | 1.532 | 21.21 | 32.82 | 0 | elimination |
+| `woodland-fastest` | 701 | 0.585 | 8.42 | 20.59 | 0 | elimination |
+| `woodland-protected` | 3600 | 0.269 | 6.31 | 29.12 | 0 | timeout |
+| `128x128-open-fastest` | 3600 | 0.318 | 2.91 | 381.68 | 1 | timeout |
+| `128x128-open-protected` | 1405 | 0.831 | 12.68 | 372.92 | 1 | elimination |
+| `128x128-obs1500-fastest` | 631 | 66.881 | 1.41 | 31,556.46 | 5 | unfinished (40 s cap) |
+| `128x128-obs1500-protected` | 631 | 68.070 | 1.30 | 32,315.66 | 5 | unfinished (40 s cap) |
+
+Mean per-stage breakdown (ms/step; `SnapJSON` is per 10 Hz published snapshot):
+
+| Scenario | Sust | Percept | Decide | Move | PostPerc | ItemAct | Combat | SnapJSON |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `training-fastest` | 0.0001 | 0.0423 | 0.3047 | 0.1497 | 0.0423 | 0.0030 | 0.0008 | 0.0652 |
+| `training-protected` | 0.0001 | 0.0684 | 2.8372 | 1.2232 | 0.0682 | 0.0047 | 0.0010 | 0.0727 |
+| `ridge-protected` | 0.0001 | 0.0850 | 0.7619 | 0.5937 | 0.0834 | 0.0065 | 0.0009 | 0.0862 |
+| `128x128-open-protected` | 0.0001 | 0.0151 | 0.0816 | 0.7142 | 0.0145 | 0.0047 | 0.0006 | 0.0613 |
+| `128x128-obs1500-fastest` | 0.0001 | 0.0019 | 0.0011 | 66.8704 | 0.0014 | 0.0051 | 0.0005 | 0.0471 |
+| `128x128-obs1500-protected` | 0.0001 | 0.0019 | 0.0015 | 68.0592 | 0.0013 | 0.0053 | 0.0005 | 0.0472 |
 
 Browser baseline (pre-inventory `156c103`, Playwright desktop Chromium): 31 tests passed in ~5.6 min (~6.2 min including build); one preset stress test takes 2.2 min on its own.
 
-The simulation step budget is 50 ms (20 Hz), and WASM is typically slower than native. Root causes:
+The simulation step budget is 50 ms (20 Hz), and WASM is typically slower than native. Root causes confirmed by stage timings:
 
 - Every sight, shot, and traversal query loops over **all** obstacles ([map.rs](crates/sim-core/src/map.rs) `blocked`, `visible`, `exposure`, `sweep_clear`).
 - `breaks()` allocates a `Vec` on every query.
@@ -62,12 +81,12 @@ Establish automated guardrails, generated contracts, behavioural visibility, and
 
 ### 0C — Benchmarks, reference oracles, and behavioural visibility
 
-- [ ] Add a native benchmark binary `crates/sim-bench` (no new runtime dependencies) and `npm run bench:rust` (and wire it into `npm run verify`). Report mean, p99, and worst step, plus time split across sustainment, perception, decisions, movement, item actions, combat, and snapshot serialization.
-- [ ] Benchmark scenarios: each preset (Fastest and Protected); 128 × 128 open; 128 × 128 with 1,500 obstacles; entity sweeps at 100, 1,000, and 5,000 units ([SCALE.md](SCALE.md)) once Phase 3 lifts the unit cap.
-- [ ] Preserve current `visible`, `exposure`, `travel_time`, and search implementations as **test-only reference oracles**; verify new implementations against them on randomised queries over presets and generated maps.
-- [ ] Add a **standard doctrine scenario suite** (e.g., Cover vs Balanced on Woodland, Protected vs Fastest on Ridge, Grenade policy comparison, Medical policy comparison, Fire on the move on vs off once Phase 4 lands) and a **headless multi-seed report tool** summarising win rates, behaviour time shares, shots, hits, cover time, item uses, and battle duration.
-- [ ] Add **statistical cross-seed tests** for qualitative doctrine outcomes (for example, "Cover spends more time in cover than Balanced in ≥ 80% of seeds") and **outcome fingerprints** (stored hashes of standard scenario outcomes) so silent behaviour shifts are caught and must be explained in handoffs.
-- [ ] Record the benchmark baseline from `sim-bench` in this file.
+- [x] Added native benchmark binary [crates/sim-bench](crates/sim-bench/Cargo.toml) (no new external dependencies), `npm run bench:rust`, and `npm run bench:rust:quick` (wired into `npm run verify`). Reports mean, p99, and worst step, plus zero-overhead per-stage timing across sustainment, perception, decisions, movement, post-movement perception, item actions, combat, and 10 Hz snapshot JSON serialization (`Battle::step_profiled()`).
+- [x] Benchmark scenarios cover all three presets (Fastest and Protected), 128 × 128 open, and 128 × 128 with 1,500 obstacles; entity sweeps at 100, 1,000, and 5,000 units ([SCALE.md](SCALE.md)) are noted and ready to enable once Phase 3 lifts the unit cap.
+- [x] Preserved current `blocked`, `visible`, `exposure`, `travel_time`, and `navigation::Search` implementations as **test-only reference oracles** in [crates/sim-core/src/oracles.rs](crates/sim-core/src/oracles.rs), verified across all presets and randomized generated maps.
+- [x] Added the **standard doctrine scenario suite** (13 scenarios across engagement distance, position preference, route preference, grenades, medical care, and fallback) and headless multi-seed report tool (`npm run report:doctrine`, [crates/sim-bench/src/doctrine_suite.rs](crates/sim-bench/src/doctrine_suite.rs)) summarising win rates, behaviour time shares, shots, damage taken, cover/vegetation shares, item uses, and battle duration. (`fire_while_moving` on/off will be added in Phase 4.)
+- [x] Added **statistical cross-seed tests** (`crates/sim-bench/tests/doctrine_suite.rs`, ≥ 80% across 10 seeds) and **outcome fingerprints** ([crates/sim-bench/fingerprints.json](crates/sim-bench/fingerprints.json)) checked in `npm run test:rust`.
+- [x] Recorded the `sim-bench` baseline in this file.
 
 #### Performance targets
 
@@ -90,14 +109,10 @@ These targets apply to every preset at 8 v 8 and to 128 × 128 with 1,500 obstac
 
 ### 0D — Agent documentation, decision records, and checkpoints
 
-- [ ] Create `docs/decisions/` with short numbered ADRs recording already-approved decisions (performance targets, game-wide base materials + custom loadouts, `fire_while_moving` default off, 10-minute default / no limit / End battle, full Svelte 5 runes, CI/tooling, human-approval checkpoints).
-- [ ] Update [AGENTS.md](AGENTS.md) with:
-  - **Human approval required before proceeding:** adding dependencies; bumping scenario `schemaVersion`; changing doctrine meaning or outcome fingerprints; loosening test tolerances or deleting tests; editing scope documents; adding art/audio assets.
-  - **Handoff requirement:** explicitly flag any edits to existing tests, and attach before/after doctrine report summaries when behaviour changes.
-  - **Asset provenance rule:** any future asset must be logged in an asset register with source and usage rights.
-  - **Code hygiene guidance:** keep source files under ~400 lines where practical, with a short module-header comment stating ownership and invariants.
-- [ ] Add focused area guides (`crates/sim-core/AGENTS.md`, `apps/web/AGENTS.md`) and step-by-step checklists/recipes for common tasks (adding an item/weapon, adding a doctrine option, adding a surface, adding a scenario field).
-- [ ] Trim algorithm-level implementation detail from [ARCHITECTURE.md](ARCHITECTURE.md) (and keep [INVENTORY.md](INVENTORY.md) / [TERRAIN.md](TERRAIN.md) focused on rules and contracts rather than internal mechanics) so docs stay accurate across refactors.
+- [x] Created [docs/decisions/](docs/decisions/README.md) with numbered ADRs (`0001`–`0007`) recording all approved decisions (performance targets, game-wide base materials + custom loadouts, `fire_while_moving` default off, 10-minute default / no limit / End battle, full Svelte 5 runes, CI/tooling, human-approval checkpoints).
+- [x] Updated [AGENTS.md](AGENTS.md) with the 6 human-approval checkpoints, asset provenance rule, code hygiene (~400-line target + header comments), verification workflow, and expanded handoff requirements (test-edit flags and before/after doctrine report summaries).
+- [x] Added focused area guides ([crates/sim-core/AGENTS.md](crates/sim-core/AGENTS.md), [apps/web/AGENTS.md](apps/web/AGENTS.md)) with module ownership, invariants, and step-by-step checklists/recipes for common tasks.
+- [x] Trimmed fragile algorithm-level implementation detail from [ARCHITECTURE.md](ARCHITECTURE.md) so docs stay accurate across refactors.
 
 ---
 

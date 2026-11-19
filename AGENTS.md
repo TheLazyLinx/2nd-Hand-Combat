@@ -5,14 +5,30 @@ PROJECT: A 2D, sprite-based browser strategy game. Players configure unit doctri
 PRIORITIES: Correct behavior, readable code, clear module boundaries, smooth browser performance, and room to extend the game without building future features now.
 
 PROJECT DOCUMENTS:
-- `ARCHITECTURE.md` — technical decisions and boundaries.
+- `ARCHITECTURE.md` — technical decisions, module ownership, and boundaries.
+- `IMPROVEMENT_PLAN.md` — active engineering phases, baselines, and checklists.
+- `docs/decisions/` — numbered Architecture Decision Records (ADRs) for approved choices.
+- `crates/sim-core/AGENTS.md` — Rust simulation area guide, invariants, and checklists.
+- `apps/web/AGENTS.md` — Svelte/TypeScript/PixiJS area guide, boundaries, and UI checklists.
 - `MVP.md` — what to build first and what to exclude.
+- `TERRAIN.md`, `INVENTORY.md`, `MAP_MAKER.md` — gameplay rules and portable scenario contracts.
 - `SCOPE.md` — gameplay direction and modes.
 - `SCALE.md` — future performance goals, not proven capacity.
 - `DREAM_GOALS.md` — ideas, not tasks.
-- `README.md` — overview and licensing status.
+- `README.md` — overview, local commands, and licensing status.
 
-Read `ARCHITECTURE.md` and `MVP.md` before implementing gameplay. Check the repository before assuming files, directories, commands, or tests exist. Where a document marks a choice as proposed or undecided, do not treat it as settled.
+Read `ARCHITECTURE.md`, `MVP.md`, and the relevant area guide before implementing changes. Check the repository before assuming files, directories, commands, or tests exist. Where a document marks a choice as proposed or undecided, do not treat it as settled.
+
+## HUMAN APPROVAL REQUIRED
+
+Pause and obtain explicit human approval before proceeding with any of the following (see `docs/decisions/0007-agent-workflow-and-human-checkpoints.md`):
+
+1. **Adding dependencies** (Rust crates or npm packages).
+2. **Bumping scenario `schemaVersion`**.
+3. **Changing doctrine meaning or updating outcome fingerprints**.
+4. **Loosening test tolerances or deleting tests**.
+5. **Editing scope documents** (`SCOPE.md`, `MVP.md`, `SCALE.md`, `DREAM_GOALS.md`).
+6. **Adding art or audio assets** — any approved asset must also be logged in an asset provenance and licence register recording its source and usage rights before inclusion.
 
 ## CRITICAL RULES
 
@@ -35,6 +51,12 @@ Read `ARCHITECTURE.md` and `MVP.md` before implementing gameplay. Check the repo
 17. **Do not make repository-level changes unasked.** No commits, pushes, pull requests, publishing, or changes to repository settings unless the task calls for them.
 18. **Ask only when blocked by a material decision.** For a larger change, state a brief plan. For routine details, use existing conventions and proceed.
 
+## CODE HYGIENE & VERIFICATION
+
+- Keep source files under ~400 lines where practical, with a short module-header comment stating ownership and key invariants.
+- Run `npm run verify:fast` on every change and `npm run verify` before merging.
+- After modifying wire types in `crates/sim-core`, regenerate `apps/web/src/generated/sim-types.ts` with `npm run gen:types` (verified by `npm run check:types-sync`).
+
 ## TEST RULES
 
 1. Test **observable behavior**, not merely object construction, private fields, or dependency wiring.
@@ -50,6 +72,8 @@ Read `ARCHITECTURE.md` and `MVP.md` before implementing gameplay. Check the repo
 At the end of a task, report briefly:
 - Changed: what and where.
 - Tested: commands run and results, or why checks could not run.
+- Test edits: explicitly flag any edits to existing tests (or state none).
+- Doctrine / behavior impact: when simulation behavior changes, include before/after doctrine report summaries and explain any outcome-fingerprint updates.
 - Remaining: known issues or decisions that still need an answer.
 
 Keep the repository understandable without relying on chat history or an agent's private notes.
