@@ -1,0 +1,11 @@
+# Issue and Bug list
+
+Open findings from the review of `dc66aa6`, in priority order.
+
+1. **Renaming a scenario can overwrite newer saved edits.** Reproduced in Chromium with two Map Maker tabs. After one tab saved a new description, renaming the scenario in the older tab restored the previous description. Rename writes the entire cached document, so it can also revert terrain, placements, and doctrine. Read the current record and update its name in one IndexedDB transaction. [Rename handler](apps/web/src/components/MapMaker.svelte#L412) · [Storage write](apps/web/src/lib/scenario-library.ts#L261)
+
+2. **A soldier can ignore an exposed target while “Engaging.”** Rifle selection checks only the nearest visible enemy. In a seeded WASM comparison, the soldier fired zero shots in 80 ticks when the nearest enemy was visible behind shot-blocking cover. Removing that enemy produced four shots at the exposed opponent over the same 80 ticks. Check targets in distance order until one offers a valid shot. [Target ordering](crates/sim-core/src/perception.rs#L12) · [Rifle selection](crates/sim-core/src/item_actions.rs#L193)
+
+3. **Additional unit and weapon types can behave differently from their catalog definitions.** Sight and movement calculations use infantry constants. Approach decisions use doctrine engagement distance, while firing checks the equipped weapon’s range. A future short-range weapon could leave its user holding position outside firing range. Exercise these paths with a second weapon and a unit with different movement or sight values. [Approach decision](crates/sim-core/src/decisions/engage.rs#L24) · [Weapon range check](crates/sim-core/src/item_actions.rs#L194) · [Sight](crates/sim-core/src/map.rs#L390) · [Movement](crates/sim-core/src/map.rs#L625)
+
+4. **Verification can pass while performance misses its targets.** The native benchmark reports timings without checking the accepted budgets. The browser stress test allows a 100 ms p95 frame gap and a 750 ms maximum, which can hide sustained rendering below the 60 fps goal. Distinguish checks that enforce acceptance targets from measurements that only report trends. [Accepted targets](docs/decisions/0001-performance-targets.md#L22) · [Benchmark command](crates/sim-bench/src/main.rs#L31) · [Browser assertions](tests/browser/skirmish.spec.ts#L366)
