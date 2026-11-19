@@ -9,6 +9,7 @@ use crate::{
     definitions::{weapon_spec, WeaponSpec, STEP},
     inventory::ItemId,
     map,
+    spatial::SpatialGrid,
     terrain::Terrain,
     types::*,
     unit::Unit,
@@ -69,6 +70,7 @@ struct ActionProposal {
 struct ActionContext<'a> {
     unit: &'a Unit,
     units: &'a [Unit],
+    spatial: &'a SpatialGrid,
     terrain: Terrain<'a>,
     tick: u32,
     observed: &'a [usize],
@@ -145,11 +147,12 @@ fn propose_grenade(ctx: &ActionContext<'_>) -> Option<ActionProposal> {
         let target = ctx.units[j].nav.position;
         if u.nav.position.distance(target) > grenade.max_distance
             || !map::clear_t(ctx.terrain, u.nav.position, target)
-            || ctx.units.iter().any(|ally| {
-                ally.vitals.hp > 0.0
-                    && !is_hostile(ally.placement.faction, u.placement.faction)
-                    && ally.nav.position.distance(target) <= safe_radius
-            })
+            || ctx
+                .spatial
+                .any_ally_in_radius(target, safe_radius, u.placement.faction, |ally| {
+                    !is_hostile(ally.faction, u.placement.faction)
+                        && ally.position.distance(target) <= safe_radius
+                })
         {
             continue;
         }
@@ -243,6 +246,7 @@ fn select_for_unit(ctx: &ActionContext<'_>) -> Option<Action> {
 
 pub(crate) fn select(
     units: &[Unit],
+    spatial: &SpatialGrid,
     terrain: Terrain<'_>,
     tick: u32,
     observations: &[Vec<usize>],
@@ -254,6 +258,7 @@ pub(crate) fn select(
             let ctx = ActionContext {
                 unit,
                 units,
+                spatial,
                 terrain,
                 tick,
                 observed: &observations[i],

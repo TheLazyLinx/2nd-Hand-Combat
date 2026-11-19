@@ -6,12 +6,13 @@ Area guide for Svelte, TypeScript, Worker, and PixiJS frontend work. Follow root
 
 | Path | Responsibility |
 | --- | --- |
-| `src/worker.ts` | Dedicated simulation Web Worker. Loads generated WASM (`src/generated/wasm/sim_wasm`), owns `WasmBattle`, runs the fixed-step catch-up pump (50 ms step, 5-step cap, ~10 Hz snapshots), and handles `WorkerCommand` / `WorkerReply`. |
-| `src/lib/client.ts` | `BattleClient`: sole owner of `new Worker(...)`, request/response timeouts (`validate`, `analyze`), battle ID filtering, and Worker disposal. |
+| `src/worker.ts` | Dedicated simulation Web Worker. Loads generated WASM (`src/generated/wasm/sim_wasm`), owns `WasmBattle`, runs the fixed-step catch-up pump (50 ms step, 5-step cap, snapshot-on-publish at ~10 Hz, behind-real-time status), switches battles with `>= 32` units to transferable binary `compactSnapshot` frames + inspected-unit inventory updates, and handles `WorkerCommand` / `WorkerReply`. |
+| `src/lib/client.ts` | `BattleClient`: sole owner of `new Worker(...)`, request/response timeouts (`validate`, `analyze`), battle ID filtering, unit inspection requests, and Worker disposal. |
+| `src/lib/compact-snapshot.ts` | Zero-copy `DataView` decoder (`CompactSnapshotView`) for 72-byte/unit transferable binary frames and on-demand inspected-unit `UnitSnapshot` reconstruction. |
 | `src/lib/types.ts` | Re-exports generated simulation wire types from `src/generated/sim-types.ts` and defines browser-only contracts (`ScenarioDocument`, `WorkerCommand`, `WorkerReply`). Never hand-copy Rust types here. |
 | `src/generated/sim-types.ts` | Auto-generated from `crates/sim-core` via `npm run gen:types`. Never edit by hand. |
 | `src/generated/wasm/` | Auto-generated WASM bindings from `npm run build` / `npm run dev`. Never edit by hand. |
-| `src/lib/battlefield.ts` | `Battlefield`: PixiJS WebGL presentation layer (terrain cache, contours, editor gizmos, camera, dynamic faction colours, interpolated snapshots). Display only — never resolves gameplay. |
+| `src/lib/battlefield.ts` | `Battlefield`: PixiJS WebGL presentation layer (terrain cache, contours, editor gizmos, camera, dynamic faction colours, texture-batched unit sprites, batched HP overlays, viewport culling, interpolated `Snapshot` and `CompactSnapshotView` frames). Display only — never resolves gameplay. |
 | `src/lib/factions.ts` | Faction display helpers (colour hex conversion, lookup, palette generation), unit definition lookup, and setup-screen inventory preview. |
 | `src/lib/scenario-library.ts` | IndexedDB scenario library (`2nd-hand-combat` / `scenarios`), 8 MiB JSON import/export, portable envelope validation, and in-memory legacy schema migration (v1/v2 → v3). Leaves gameplay/field validation to Rust. |
 | `src/lib/editor.ts` | Pure Map Maker helpers (`EditorSession`, `blankDocument`, terrain `paint`, `resizeScenario`, undo/redo snapshots). |

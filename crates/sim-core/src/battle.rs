@@ -2,8 +2,8 @@
 //! staggered tactical decisions, movement, combat, and victory evaluation.
 
 use crate::{
-    decisions, definitions::TUNING, navigation::SearchScratch, perception, terrain::TerrainCache,
-    types::*, unit::Unit, validation::validate_scenario,
+    decisions, definitions::TUNING, navigation::SearchScratch, perception, spatial::SpatialGrid,
+    terrain::TerrainCache, types::*, unit::Unit, validation::validate_scenario,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -112,8 +112,11 @@ impl StepTimer for RealTimer {
 pub struct Battle {
     scenario: Scenario,
     terrain: TerrainCache,
+    spatial: SpatialGrid,
     scratch: SearchScratch,
     threat_positions: Vec<Point>,
+    allies_scratch: Vec<(usize, Point)>,
+    allies_buf: Vec<Point>,
     pre_observations: Vec<Vec<usize>>,
     post_observations: Vec<Vec<usize>>,
     moved: Vec<bool>,
@@ -144,14 +147,18 @@ impl Battle {
             }
         }
         let terrain = TerrainCache::new(&scenario.map);
+        let spatial = SpatialGrid::new(scenario.map.width, scenario.map.height);
         let scratch = SearchScratch::new(terrain.width, terrain.height);
         let unit_count = units.len();
         Ok(Self {
             rng: scenario.seed as u64 + 1,
             scenario,
             terrain,
+            spatial,
             scratch,
             threat_positions: Vec::new(),
+            allies_scratch: Vec::new(),
+            allies_buf: Vec::new(),
             pre_observations: vec![Vec::new(); unit_count],
             post_observations: vec![Vec::new(); unit_count],
             moved: vec![false; unit_count],
@@ -162,6 +169,47 @@ impl Battle {
     }
     pub fn is_finished(&self) -> bool {
         self.result.is_some()
+    }
+    pub fn tick(&self) -> u32 {
+        self.tick
+    }
+    pub fn elapsed(&self) -> f64 {
+        self.tick as f64 * crate::definitions::STEP
+    }
+    pub fn unit_count(&self) -> usize {
+        self.units.len()
+    }
+    pub fn result(&self) -> Option<&BattleResult> {
+        self.result.as_ref()
+    }
+    /// Writes fixed-stride little-endian binary records (`COMPACT_UNIT_BYTES` bytes per unit)
+    /// for all units without serializing nested inventory JSON.
+    pub fn write_compact_units(&self, out: &mut Vec<u8>) {
+        let terrain = self.terrain.view(&self.scenario.map);
+        crate::compact_snapshot::write_units(
+            &self.units,
+            &self.scenario.map,
+            &self.terrain,
+            terrain,
+            self.tick,
+            out,
+        );
+    }
+    /// Returns `(version, InventorySnapshot)` for `unit_id` only when its inventory version
+    /// differs from `last_version` (pass `0` for initial fetch).
+    pub fn unit_inventory_if_changed(
+        &self,
+        unit_id: u32,
+        last_version: u32,
+    ) -> Option<(u32, InventorySnapshot)> {
+        let unit = self
+            .units
+            .binary_search_by_key(&unit_id, |u| u.placement.id)
+            .ok()
+            .map(|idx| &self.units[idx])
+            .or_else(|| self.units.iter().find(|u| u.placement.id == unit_id))?;
+        let version = unit.inventory.version();
+        (version != last_version).then(|| (version, unit.inventory.snapshot()))
     }
     /// Immediately concludes an unfinished battle as a draw (`reason: "stopped"`).
     /// Preserves the existing terminal result if the battle has already ended.
@@ -202,10 +250,12 @@ impl Battle {
         }
         timer.mark_sustainment();
         let terrain = self.terrain.view(&self.scenario.map);
-        // Sight is refreshed every tick independently for each living unit.
+        self.spatial.rebuild(&self.units);
+        // Sight is refreshed every tick independently for each living unit via the spatial grid.
         for i in 0..self.units.len() {
-            perception::observe_all_into(
+            perception::observe_all_with_grid(
                 &self.units,
+                &self.spatial,
                 terrain,
                 i,
                 self.tick,
@@ -247,18 +297,26 @@ impl Battle {
             let visible_enemy = self.pre_observations[i]
                 .first()
                 .map(|j| self.units[*j].nav.position);
-            let allies = self
-                .units
-                .iter()
-                .filter(|other| {
-                    other.vitals.hp > 0.0
-                        && !self
-                            .scenario
-                            .is_hostile(other.placement.faction, unit.placement.faction)
-                        && other.placement.id != unit.placement.id
-                })
-                .map(|other| other.nav.position)
-                .collect();
+            self.allies_buf.clear();
+            if unit.withdrawing() {
+                self.allies_scratch.clear();
+                let my_pos = unit.nav.position;
+                let my_faction = unit.placement.faction;
+                let my_id = unit.placement.id;
+                let radius = TUNING.fallback_radius;
+                self.spatial
+                    .query_ally_radius(my_pos, radius, my_faction, |entry| {
+                        if entry.id != my_id
+                            && !self.scenario.is_hostile(entry.faction, my_faction)
+                            && my_pos.distance(entry.position) <= radius
+                        {
+                            self.allies_scratch.push((entry.index(), entry.position));
+                        }
+                    });
+                self.allies_scratch.sort_by_key(|&(idx, _)| idx);
+                self.allies_buf
+                    .extend(self.allies_scratch.iter().map(|&(_, p)| p));
+            }
             decisions.push(Some(decisions::decide_with(
                 &decisions::DecisionInput {
                     unit,
@@ -267,7 +325,7 @@ impl Battle {
                         .first()
                         .is_some_and(|j| self.tick < self.units[*j].combat.revealed_until),
                     tick: self.tick,
-                    allies,
+                    allies: &self.allies_buf,
                 },
                 terrain,
                 &mut self.scratch,
@@ -311,6 +369,7 @@ impl Battle {
         timer.mark_movement();
         crate::combat::execute_with_context(
             &mut self.units,
+            &mut self.spatial,
             terrain,
             &mut self.rng,
             self.tick,
@@ -358,9 +417,7 @@ impl Battle {
                             .perception
                             .target
                             .and_then(|id| {
-                                self.units
-                                    .iter()
-                                    .find(|other| other.placement.id == id && other.vitals.hp > 0.0)
+                                crate::compact_snapshot::find_living_unit_by_id(&self.units, id)
                             })
                             .map(|other| {
                                 1.0 - crate::map::shot_fraction_t(

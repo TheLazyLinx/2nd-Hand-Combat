@@ -163,6 +163,7 @@ pub(crate) struct Inventory {
     weight_grams: u32,
     stowed_volume_ml: u32,
     load_factor: f64,
+    version: u32,
 }
 
 #[inline]
@@ -304,6 +305,7 @@ impl Inventory {
             weight_grams: 0,
             stowed_volume_ml: 0,
             load_factor: 1.0,
+            version: 1,
         };
         inventory.validate()?;
         Ok(inventory)
@@ -410,6 +412,11 @@ impl Inventory {
         self.load_factor
     }
 
+    #[inline]
+    pub(crate) fn version(&self) -> u32 {
+        self.version
+    }
+
     fn stow_all(&mut self) -> Result<(), InventoryError> {
         let mut candidate = self.clone();
         candidate.left = None;
@@ -473,6 +480,10 @@ impl Inventory {
             used.count = used.count.checked_add(1).ok_or(InventoryError::Overflow)?;
         } else {
             self.uses.push(UseRecord { item, count: 1 });
+        }
+        self.version = self.version.wrapping_add(1);
+        if self.version == 0 {
+            self.version = 1;
         }
         Ok(())
     }

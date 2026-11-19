@@ -1,6 +1,7 @@
-import { Application, Container, Graphics, Text } from 'pixi.js';
+import { Application, Container, Graphics, Rectangle, Sprite, Text, Texture } from 'pixi.js';
+import { isCompactFrame, type LiveFrame } from './compact-snapshot';
 import { factionColor, unitDefinition } from './factions';
-import type { AnalysisIssue, Catalog, Scenario, Snapshot, UnitSnapshot, Point } from './types';
+import type { AnalysisIssue, Catalog, Scenario, Point } from './types';
 
 export interface Camera {
   x: number;
@@ -21,23 +22,40 @@ export interface EditorOptions {
   selection?: { kind: 'unit' | 'obstacle' | 'patrol'; index: number } | null;
 }
 
+const DEAD_COLOR = 0x777368;
+const MAX_ALL_UNIT_LABELS = 64;
+
 interface UnitView {
-  container: Container;
-  graphic: Graphics;
+  id: number;
+  sprite: Sprite;
+  label: Text | null;
   from: { x: number; y: number };
   target: { x: number; y: number };
+  x: number;
+  y: number;
   started: number;
-  appearance: string;
+  textureColor: number;
+  hp: number;
+  maxHp: number;
+  hasState: boolean;
   shots: number;
+  visible: boolean;
 }
 
-/** A presentation of scenario and snapshots. Interpolation never changes simulation state. */
+/**
+ * PixiJS WebGL battlefield presentation with texture-batched unit sprites and viewport culling.
+ * Interpolation and culling are purely visual and never modify simulation state.
+ */
 export class Battlefield {
   private app = new Application();
   private scene = new Container();
   private terrain = new Graphics();
   private range = new Graphics();
+  private unitsLayer = new Container();
+  private hpLayer = new Graphics();
+  private labelsLayer = new Container();
   private effects = new Graphics();
+  private unitTextures = new Map<number, Texture>();
   private units = new Map<number, UnitView>();
   private observer?: ResizeObserver;
   private destroyed = false;
@@ -48,6 +66,9 @@ export class Battlefield {
   private patrol = new Graphics();
   private editor?: EditorOptions;
   private camera: Camera = { x: 0, y: 0, zoom: 1 };
+  private viewBounds = { minX: -Infinity, maxX: Infinity, minY: -Infinity, maxY: Infinity };
+  private selectedId: number | null = null;
+  private showHp = true;
   private pointer: number | null = null;
   private panning = false;
   private suppressClick = false;
@@ -90,6 +111,9 @@ export class Battlefield {
       this.editorFeedback,
       this.brush,
       this.range,
+      this.unitsLayer,
+      this.hpLayer,
+      this.labelsLayer,
       this.effects,
     );
     this.app.stage.addChild(this.scene);
@@ -106,9 +130,95 @@ export class Battlefield {
     this.resize();
   }
 
+  private unitTexture(color: number): Texture {
+    const cached = this.unitTextures.get(color);
+    if (cached) return cached;
+    const g = new Graphics();
+    // Bake in 100x100 px template centered at (50, 50); sprites scale by 0.01 into world units.
+    g.circle(50, 50, 38).fill({ color: 0x20271f, alpha: 0.3 });
+    g.circle(50, 45, 30).fill(color).stroke({ color: 0xf4ead0, width: 7 });
+    g.circle(50, 42, 10).fill(0xe5d6b1);
+    const texture = this.app.renderer.generateTexture({
+      target: g,
+      frame: new Rectangle(0, 0, 100, 100),
+      resolution: 2,
+      antialias: true,
+    });
+    g.destroy();
+    this.unitTextures.set(color, texture);
+    return texture;
+  }
+
+  private createLabel(id: number): Text {
+    const label = new Text({
+      text: String(id),
+      resolution: 2,
+      style: { fontFamily: 'sans-serif', fontSize: 16, fill: 0x292d21, fontWeight: 'bold' },
+    });
+    label.scale.set(0.025);
+    label.anchor.set(0.5, 0);
+    this.labelsLayer.addChild(label);
+    return label;
+  }
+
+  private inView(x: number, y: number): boolean {
+    const b = this.viewBounds;
+    return x >= b.minX && x <= b.maxX && y >= b.minY && y <= b.maxY;
+  }
+
+  private showUnitLabels(): boolean {
+    return this.units.size <= MAX_ALL_UNIT_LABELS && this.scene.scale.x >= 8;
+  }
+
+  private syncUnitVisibility(view: UnitView, showLabels: boolean) {
+    const visible = this.inView(view.x, view.y);
+    view.visible = visible;
+    view.sprite.visible = visible;
+    if (visible) {
+      view.sprite.position.set(view.x, view.y);
+    }
+    if (view.label) {
+      const labelVisible = visible && (showLabels || view.id === this.selectedId);
+      view.label.visible = labelVisible;
+      if (labelVisible) view.label.position.set(view.x, view.y + 0.4);
+    }
+  }
+
+  private drawUnitOverlays() {
+    this.hpLayer.clear();
+    let visibleUnits = 0;
+    let culledUnits = 0;
+    for (const view of this.units.values()) {
+      if (!view.visible) {
+        culledUnits++;
+        continue;
+      }
+      visibleUnits++;
+      if (view.id === this.selectedId) {
+        this.hpLayer.circle(view.x, view.y, 0.48).stroke({ color: 0xf6e3ad, width: 0.07 });
+      }
+      if (this.showHp && view.hasState) {
+        const ratio = Math.max(0, Math.min(1, view.hp / view.maxHp));
+        this.hpLayer.rect(view.x - 0.4, view.y - 0.65, 0.8, 0.09).fill(0x302f25);
+        this.hpLayer.rect(view.x - 0.4, view.y - 0.65, 0.8 * ratio, 0.09).fill(0xe4c77e);
+      }
+    }
+    this.host.dataset.visibleUnits = String(visibleUnits);
+    this.host.dataset.culledUnits = String(culledUnits);
+    this.host.dataset.unitTextures = String(this.unitTextures.size);
+  }
+
+  private applyCulling() {
+    const showLabels = this.showUnitLabels();
+    for (const view of this.units.values()) {
+      this.syncUnitVisibility(view, showLabels);
+    }
+    this.drawUnitOverlays();
+  }
+
   update(
     scenario: Scenario,
-    snapshot: Snapshot | null,
+    snapshot: LiveFrame | null,
     selected: number | null,
     showHp: boolean,
     running: boolean,
@@ -117,6 +227,8 @@ export class Battlefield {
   ) {
     this.scenario = scenario;
     this.running = running;
+    this.selectedId = selected;
+    this.showHp = showHp;
     if (!this.app.renderer || this.destroyed) return;
     if (scenario.map !== this.mapRef || overlay !== this.overlayRef) {
       const dimensionsChanged =
@@ -133,74 +245,123 @@ export class Battlefield {
     const live = new Set(scenario.units.map((unit) => unit.id));
     for (const [id, view] of this.units) {
       if (!live.has(id)) {
-        view.container.destroy({ children: true });
+        view.sprite.destroy();
+        view.label?.destroy();
         this.units.delete(id);
       }
     }
-    const snapshots = new Map((snapshot?.units ?? []).map((unit) => [unit.id, unit]));
+    const compact = isCompactFrame(snapshot) ? snapshot : null;
+    const snapshots =
+      snapshot && !isCompactFrame(snapshot)
+        ? new Map(snapshot.units.map((unit) => [unit.id, unit]))
+        : null;
     const newTick = snapshot !== null && snapshot.tick !== this.snapshotTick;
     const now = performance.now();
     const fired: Array<{ shooter: number; target: number }> = [];
+    const allocateLabels = scenario.units.length <= MAX_ALL_UNIT_LABELS;
+    const showLabels = allocateLabels && this.scene.scale.x >= 8;
+
     for (const placement of scenario.units) {
-      const state = snapshots.get(placement.id);
+      let hasState = false;
+      let stateX = placement.position.x;
+      let stateY = placement.position.y;
+      let stateHp = 0;
+      let stateDead = false;
+      let stateShots = 0;
+      let stateTarget: number | null = null;
+
+      if (compact) {
+        const idx = compact.indexOf(placement.id);
+        if (idx !== undefined) {
+          hasState = true;
+          stateX = compact.x(idx);
+          stateY = compact.y(idx);
+          stateHp = compact.hp(idx);
+          stateDead = compact.behavior(idx) === 'dead';
+          stateShots = compact.shotsFired(idx);
+          stateTarget = compact.targetId(idx);
+        }
+      } else if (snapshots) {
+        const st = snapshots.get(placement.id);
+        if (st) {
+          hasState = true;
+          stateX = st.position.x;
+          stateY = st.position.y;
+          stateHp = st.hp;
+          stateDead = st.behavior === 'dead';
+          stateShots = st.shotsFired;
+          stateTarget = st.targetId;
+        }
+      }
+
+      const baseColor = factionColor(scenario.factions, placement.faction);
+      const textureColor = stateDead ? DEAD_COLOR : baseColor;
+      const unitMaxHp = unitDefinition(catalog, placement.definitionId).maxHp;
       let view = this.units.get(placement.id);
       if (!view) {
-        const container = new Container();
-        const graphic = new Graphics();
-        // Rasterize at a readable pixel size, then scale into world units.
-        const label = new Text({
-          text: String(placement.id),
-          resolution: 2,
-          style: { fontFamily: 'sans-serif', fontSize: 16, fill: 0x292d21, fontWeight: 'bold' },
-        });
-        label.scale.set(0.025);
-        label.anchor.set(0.5, 0);
-        label.position.set(0, 0.4);
-        container.addChild(graphic, label);
-        this.scene.addChild(container);
-        const position = state?.position ?? placement.position;
-        container.position.set(position.x, position.y);
+        const sprite = new Sprite(this.unitTexture(textureColor));
+        sprite.anchor.set(0.5, 0.5);
+        sprite.scale.set(0.01);
+        this.unitsLayer.addChild(sprite);
+        const label =
+          allocateLabels || selected === placement.id ? this.createLabel(placement.id) : null;
         view = {
-          container,
-          graphic,
-          from: { ...position },
-          target: { ...position },
+          id: placement.id,
+          sprite,
+          label,
+          from: { x: stateX, y: stateY },
+          target: { x: stateX, y: stateY },
+          x: stateX,
+          y: stateY,
           started: now,
-          appearance: '',
-          shots: state?.shotsFired ?? 0,
+          textureColor,
+          hp: stateHp,
+          maxHp: unitMaxHp,
+          hasState,
+          shots: stateShots,
+          visible: true,
         };
         this.units.set(placement.id, view);
       }
+      if (!view.label && (allocateLabels || selected === placement.id)) {
+        view.label = this.createLabel(placement.id);
+      }
+      if (view.textureColor !== textureColor) {
+        view.textureColor = textureColor;
+        view.sprite.texture = this.unitTexture(textureColor);
+      }
       if (!snapshot) {
-        view.from = { ...placement.position };
-        view.target = { ...placement.position };
-        view.container.position.set(placement.position.x, placement.position.y);
+        view.from.x = placement.position.x;
+        view.from.y = placement.position.y;
+        view.target.x = placement.position.x;
+        view.target.y = placement.position.y;
+        view.x = placement.position.x;
+        view.y = placement.position.y;
         view.shots = 0;
-      } else if (newTick && state) {
-        view.from = { x: view.container.x, y: view.container.y };
-        view.target = { ...state.position };
+      } else if (newTick && hasState) {
+        view.from.x = view.x;
+        view.from.y = view.y;
+        view.target.x = stateX;
+        view.target.y = stateY;
         view.started = now;
-        if (!running) view.container.position.set(state.position.x, state.position.y);
-        if (state.shotsFired > view.shots && state.targetId !== null)
-          fired.push({ shooter: state.id, target: state.targetId });
-        view.shots = state.shotsFired;
+        if (!running) {
+          view.x = stateX;
+          view.y = stateY;
+        }
+        if (stateShots > view.shots && stateTarget !== null)
+          fired.push({ shooter: placement.id, target: stateTarget });
+        view.shots = stateShots;
       }
-      if (!running && state) view.container.position.set(state.position.x, state.position.y);
-      const color = factionColor(scenario.factions, placement.faction);
-      const unitMaxHp = unitDefinition(catalog, placement.definitionId).maxHp;
-      const appearance = JSON.stringify([
-        color,
-        selected === placement.id,
-        state?.behavior,
-        state?.hp,
-        showHp,
-        unitMaxHp,
-      ]);
-      if (view.appearance !== appearance) {
-        view.appearance = appearance;
-        this.drawUnit(view.graphic, color, state, selected === placement.id, showHp, unitMaxHp);
+      if (!running && hasState) {
+        view.x = stateX;
+        view.y = stateY;
       }
+      view.hp = stateHp;
+      view.maxHp = unitMaxHp;
+      view.hasState = hasState;
+      this.syncUnitVisibility(view, showLabels);
     }
+    this.drawUnitOverlays();
     this.snapshotTick = snapshot?.tick ?? null;
     this.range.clear();
     const selection = !snapshot ? scenario.units.find((unit) => unit.id === selected) : undefined;
@@ -327,43 +488,26 @@ export class Battlefield {
     this.terrain.updateCacheTexture();
   }
 
-  private drawUnit(
-    g: Graphics,
-    color: number,
-    state: UnitSnapshot | undefined,
-    selected: boolean,
-    showHp: boolean,
-    maxHp: number,
-  ) {
-    g.clear().circle(0, 0, 0.38).fill({ color: 0x20271f, alpha: 0.3 });
-    g.circle(0, -0.05, 0.3)
-      .fill(state?.behavior === 'dead' ? 0x777368 : color)
-      .stroke({ color: 0xf4ead0, width: 0.07 });
-    g.circle(0, -0.08, 0.1).fill(0xe5d6b1);
-    if (selected) g.circle(0, 0, 0.48).stroke({ color: 0xf6e3ad, width: 0.07 });
-    if (showHp && state) {
-      g.rect(-0.4, -0.65, 0.8, 0.09).fill(0x302f25);
-      g.rect(-0.4, -0.65, 0.8 * Math.max(0, Math.min(1, state.hp / maxHp)), 0.09).fill(0xe4c77e);
-    }
-  }
-
   private animate = () => {
     if (!this.running) return;
     const now = performance.now();
+    const showLabels = this.showUnitLabels();
     for (const view of this.units.values()) {
       const t = Math.min(1, (now - view.started) / 100);
-      view.container.position.set(
-        view.from.x + (view.target.x - view.from.x) * t,
-        view.from.y + (view.target.y - view.from.y) * t,
-      );
+      view.x = view.from.x + (view.target.x - view.from.x) * t;
+      view.y = view.from.y + (view.target.y - view.from.y) * t;
+      this.syncUnitVisibility(view, showLabels);
     }
+    this.drawUnitOverlays();
     this.effects.clear();
     if (now < this.effectUntil) {
-      for (const { from, to } of this.effectLines)
+      for (const { from, to } of this.effectLines) {
+        if (!from.visible && !to.visible) continue;
         this.effects
-          .moveTo(from.container.x, from.container.y)
-          .lineTo(to.container.x, to.container.y)
+          .moveTo(from.x, from.y)
+          .lineTo(to.x, to.y)
           .stroke({ color: 0xfce4a2, width: 0.09, alpha: 0.9 });
+      }
     } else this.effectLines = [];
   };
 
@@ -387,6 +531,14 @@ export class Battlefield {
         : Math.max(halfY, Math.min(this.scenario.map.height - halfY, this.camera.y));
     this.scene.position.set(width / 2 - this.camera.x * scale, height / 2 - this.camera.y * scale);
     this.scene.scale.set(scale);
+    const pad = 1.5;
+    this.viewBounds = {
+      minX: -this.scene.x / scale - pad,
+      maxX: (width - this.scene.x) / scale + pad,
+      minY: -this.scene.y / scale - pad,
+      maxY: (height - this.scene.y) / scale + pad,
+    };
+    this.applyCulling();
     // The map is static between edits; cache it at the current display resolution.
     const resolution = Math.max(
       0.25,
@@ -611,6 +763,8 @@ export class Battlefield {
       this.app.canvas.removeEventListener('pointercancel', this.pointerUp);
       this.app.canvas.removeEventListener('wheel', this.wheel);
       this.app.canvas.removeEventListener('contextmenu', this.contextMenu);
+      for (const texture of this.unitTextures.values()) texture.destroy(true);
+      this.unitTextures.clear();
       this.app.destroy(true, { children: true });
     }
   }

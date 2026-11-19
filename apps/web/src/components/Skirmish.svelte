@@ -2,6 +2,7 @@
   import { onMount, tick } from 'svelte';
   import { BattleClient } from '../lib/client';
   import { Battlefield } from '../lib/battlefield';
+  import { CompactSnapshotView, isCompactFrame, type LiveFrame } from '../lib/compact-snapshot';
   import {
     factionColorHex,
     factionName,
@@ -18,8 +19,8 @@
     BattleResult,
     Catalog,
     Doctrine,
+    InventorySnapshot,
     Scenario,
-    Snapshot,
     UnitPlacement,
     WorkerReply,
   } from '../lib/types';
@@ -36,7 +37,9 @@
   let description = '';
   let scenario: Scenario | null = null;
   let starting: Scenario | null = null;
-  let snapshot: Snapshot | null = null;
+  let snapshot: LiveFrame | null = null;
+  let inspectedInventory: { unitId: number; inventory: InventorySnapshot } | null = null;
+  let behindRealTime = false;
   let result: BattleResult | null = null;
   let phase: 'loading' | 'setup' | 'running' | 'paused' | 'finished' | 'error' = 'loading';
   let error = '';
@@ -79,7 +82,22 @@
   $: if (scenario && client && scenario !== analyzedScenario) {
     analyzeScenario(scenario);
   }
-  $: selectedState = snapshot?.units.find((unit) => unit.id === selected) ?? null;
+  $: selectedState = (() => {
+    if (!snapshot || selected === null) return null;
+    if (!isCompactFrame(snapshot)) {
+      return snapshot.units.find((unit) => unit.id === selected) ?? null;
+    }
+    const inv =
+      inspectedInventory?.unitId === selected
+        ? inspectedInventory.inventory
+        : catalog && scenario && selectedUnit
+          ? previewUnitInventory(catalog, scenario, selectedUnit)
+          : null;
+    return inv ? snapshot.unitSnapshot(selected, inv) : null;
+  })();
+  $: if (client && phase !== 'setup' && phase !== 'loading' && phase !== 'error') {
+    client.inspect(selected);
+  }
   $: if (battlefield && scenario && catalog)
     battlefield.update(
       scenario,
@@ -127,6 +145,8 @@
           };
       lastNumericTimeLimit = scenario.timeLimit ?? catalog.defaultTimeLimit;
       snapshot = null;
+      inspectedInventory = null;
+      behindRealTime = false;
       result = null;
       selected = null;
       placement = null;
@@ -136,18 +156,48 @@
       snapshot = message.snapshot;
       if (message.snapshot.result) {
         result = message.snapshot.result;
+        behindRealTime = false;
         phase = 'finished';
       }
+    } else if (message.type === 'compactSnapshot') {
+      snapshot = new CompactSnapshotView(
+        message.tick,
+        message.elapsed,
+        message.unitCount,
+        message.buffer,
+        message.result,
+      );
+      if (message.inspectedInventory) {
+        inspectedInventory = {
+          unitId: message.inspectedInventory.unitId,
+          inventory: message.inspectedInventory.inventory,
+        };
+      }
+      if (message.result) {
+        result = message.result;
+        behindRealTime = false;
+        phase = 'finished';
+      }
+    } else if (message.type === 'unitInventory') {
+      inspectedInventory = {
+        unitId: message.update.unitId,
+        inventory: message.update.inventory,
+      };
+    } else if (message.type === 'performance') {
+      behindRealTime = message.behindRealTime;
     } else if (message.type === 'state') {
+      if (message.state !== 'running') behindRealTime = false;
       if (message.state === 'running' && document.hidden) {
         client?.pause();
         phase = 'paused';
       } else if (message.state === 'running' || message.state === 'paused') phase = message.state;
     } else if (message.type === 'result') {
       result = message.result;
+      behindRealTime = false;
       phase = 'finished';
     } else if (message.type === 'error') {
       error = message.message;
+      behindRealTime = false;
       phase = 'error';
     }
   }
@@ -186,6 +236,8 @@
     catalog = null;
     scenario = null;
     snapshot = null;
+    inspectedInventory = null;
+    behindRealTime = false;
     result = null;
     starting = null;
     selected = null;
@@ -200,10 +252,14 @@
   async function mapClick(x: number, y: number) {
     if (!scenario || !catalog || busy) return;
     if (phase !== 'setup') {
-      const nearest = snapshot?.units.find(
-        (unit) => Math.hypot(unit.position.x - x, unit.position.y - y) < 0.65,
-      );
-      selected = nearest?.id ?? null;
+      if (isCompactFrame(snapshot)) {
+        selected = snapshot.findNearest(x, y, 0.65);
+      } else {
+        const nearest = snapshot?.units.find(
+          (unit) => Math.hypot(unit.position.x - x, unit.position.y - y) < 0.65,
+        );
+        selected = nearest?.id ?? null;
+      }
       return;
     }
     if (placement !== null) {
@@ -341,6 +397,8 @@
       starting = copy(candidate);
       startingMapId = mapId;
       snapshot = null;
+      inspectedInventory = null;
+      behindRealTime = false;
       result = null;
       selected = null;
       placement = null;
@@ -361,6 +419,8 @@
     scenario = copy(starting);
     mapId = startingMapId;
     snapshot = null;
+    inspectedInventory = null;
+    behindRealTime = false;
     result = null;
     selected = null;
     placement = null;
@@ -439,7 +499,13 @@
       </div>
       <div class="map-frame">
         <div class="map-top">
-          <span>TACTICAL MAP</span><span data-testid="battle-clock">
+          <span>TACTICAL MAP</span>{#if behindRealTime && phase === 'running'}<span
+              class="lag-badge"
+              role="status"
+              data-testid="behind-realtime"
+            >
+              Simulation behind real time
+            </span>{/if}<span data-testid="battle-clock">
             {phase === 'setup' ? 'DEPLOYMENT' : 'LIVE VIEW'} / {snapshot
               ? `${snapshot.elapsed.toFixed(1)}s`
               : '00:00'} / {scenario?.timeLimit === null

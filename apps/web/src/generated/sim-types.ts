@@ -233,6 +233,7 @@ export type UnitDefinition = {
   maxStowedVolumeMl: number;
   defaultLoadout: Array<LoadoutEntry>;
 };
+export type UnitInventoryUpdate = { unitId: number; version: number; inventory: InventorySnapshot };
 export type UnitLoadout =
   { kind: 'named'; name: string } | { kind: 'inline'; entries: Array<LoadoutEntry> };
 export type UnitPlacement = {

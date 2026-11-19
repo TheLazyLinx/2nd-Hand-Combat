@@ -1,6 +1,9 @@
 //! WebAssembly adapter for `sim-core`. Keeps browser bindings out of the native core.
 
-use sim_core::{analyze_skirmish_scenario, catalog, validate_skirmish_scenario, Battle, Scenario};
+use sim_core::{
+    analyze_skirmish_scenario, catalog, validate_skirmish_scenario, Battle, Scenario,
+    UnitInventoryUpdate, COMPACT_UNIT_BYTES,
+};
 use wasm_bindgen::prelude::*;
 
 fn js_error(error: impl std::fmt::Display) -> JsValue {
@@ -51,8 +54,55 @@ impl WasmBattle {
         Ok(())
     }
 
+    pub fn tick(&self) -> u32 {
+        self.battle.tick()
+    }
+
+    pub fn elapsed(&self) -> f64 {
+        self.battle.elapsed()
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.battle.is_finished()
+    }
+
+    pub fn unit_count(&self) -> u32 {
+        self.battle.unit_count() as u32
+    }
+
     pub fn snapshot_json(&self) -> Result<String, JsValue> {
         serde_json::to_string(&self.battle.snapshot()).map_err(js_error)
+    }
+
+    pub fn compact_units_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(self.battle.unit_count() * COMPACT_UNIT_BYTES);
+        self.battle.write_compact_units(&mut bytes);
+        bytes
+    }
+
+    pub fn unit_inventory_if_changed_json(
+        &self,
+        unit_id: u32,
+        last_version: u32,
+    ) -> Result<Option<String>, JsValue> {
+        let Some((version, inventory)) =
+            self.battle.unit_inventory_if_changed(unit_id, last_version)
+        else {
+            return Ok(None);
+        };
+        let update = UnitInventoryUpdate {
+            unit_id,
+            version,
+            inventory,
+        };
+        serde_json::to_string(&update).map(Some).map_err(js_error)
+    }
+
+    pub fn result_json(&self) -> Result<Option<String>, JsValue> {
+        match self.battle.result() {
+            Some(result) => serde_json::to_string(result).map(Some).map_err(js_error),
+            None => Ok(None),
+        }
     }
 
     pub fn stop(&mut self) {

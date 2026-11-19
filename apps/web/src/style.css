@@ -237,6 +237,13 @@ small {
   justify-content: space-between;
   padding: 1px 2px 11px;
 }
+.lag-badge {
+  color: #f6d38b;
+  background: #6b3b24;
+  border: 1px solid #c56d42;
+  padding: 2px 7px;
+  border-radius: 2px;
+}
 .map-bottom {
   padding: 11px 2px 1px;
   flex-wrap: wrap;

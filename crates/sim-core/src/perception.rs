@@ -1,9 +1,9 @@
-//! Per-unit enemy spotting and incremental post-movement observation refresh.
+//! Per-unit enemy spotting and incremental post-movement observation refresh via `SpatialGrid`.
 //!
-//! Invariant: `refresh_post_movement` produces the exact same sorted index lists as calling
-//! `observe_all_into` from scratch for every living unit.
+//! Invariant: `observe_all_with_grid` and `refresh_post_movement` produce the exact same sorted
+//! index lists as a full pairwise linear scan over all living units.
 
-use crate::{map, terrain::Terrain, types::is_hostile, unit::Unit};
+use crate::{map, spatial::SpatialGrid, terrain::Terrain, types::is_hostile, unit::Unit};
 
 #[cfg(test)]
 use crate::{terrain::TerrainCache, types::ArenaMap};
@@ -18,8 +18,9 @@ fn sort_seen(units: &[Unit], observer_pos: crate::types::Point, seen: &mut [usiz
     });
 }
 
-pub(crate) fn observe_all_into(
+pub(crate) fn observe_all_with_grid(
     units: &[Unit],
+    spatial: &SpatialGrid,
     terrain: Terrain<'_>,
     index: usize,
     tick: u32,
@@ -30,25 +31,31 @@ pub(crate) fn observe_all_into(
     if me.vitals.hp <= 0.0 {
         return;
     }
-    for (i, u) in units.iter().enumerate() {
-        if u.vitals.hp > 0.0
-            && is_hostile(me.placement.faction, u.placement.faction)
-            && map::detectable_t(
-                terrain,
-                me.nav.position,
-                u.nav.position,
-                tick < u.combat.revealed_until,
-            )
-        {
-            out.push(i);
+    let range = me.def.spotting_range;
+    let range_sq = (range + 1e-6) * (range + 1e-6);
+    let my_pos = me.nav.position;
+    let my_faction = me.placement.faction;
+    spatial.query_hostile_radius(my_pos, range, my_faction, |entry| {
+        if !is_hostile(my_faction, entry.faction) {
+            return;
         }
-    }
-    sort_seen(units, me.nav.position, out);
+        let dx = entry.position.x - my_pos.x;
+        let dy = entry.position.y - my_pos.y;
+        if dx * dx + dy * dy > range_sq {
+            return;
+        }
+        if map::detectable_t(terrain, my_pos, entry.position, tick < entry.revealed_until) {
+            out.push(entry.index());
+        }
+    });
+    sort_seen(units, my_pos, out);
 }
 
-/// Refreshes observations after movement by reusing pre-movement results for stationary pairs.
+/// Refreshes observations after movement by reusing pre-movement results for stationary pairs
+/// and querying the updated `SpatialGrid` for moved units within spotting range.
 pub(crate) fn refresh_post_movement(
     units: &[Unit],
+    spatial: &SpatialGrid,
     terrain: Terrain<'_>,
     tick: u32,
     pre: &[Vec<usize>],
@@ -68,7 +75,7 @@ pub(crate) fn refresh_post_movement(
             continue;
         }
         if moved[i] {
-            observe_all_into(units, terrain, i, tick, &mut post[i]);
+            observe_all_with_grid(units, spatial, terrain, i, tick, &mut post[i]);
             continue;
         }
         let dst = &mut post[i];
@@ -78,24 +85,28 @@ pub(crate) fn refresh_post_movement(
                 dst.push(j);
             }
         }
+        let range = u.def.spotting_range;
+        let range_sq = (range + 1e-6) * (range + 1e-6);
+        let my_pos = u.nav.position;
+        let my_faction = u.placement.faction;
         let mut added_moved = false;
-        for (j, other) in units.iter().enumerate() {
-            if moved[j]
-                && other.vitals.hp > 0.0
-                && is_hostile(u.placement.faction, other.placement.faction)
-                && map::detectable_t(
-                    terrain,
-                    u.nav.position,
-                    other.nav.position,
-                    tick < other.combat.revealed_until,
-                )
-            {
+        spatial.query_hostile_radius(my_pos, range, my_faction, |entry| {
+            let j = entry.index();
+            if !moved[j] || !is_hostile(my_faction, entry.faction) {
+                return;
+            }
+            let dx = entry.position.x - my_pos.x;
+            let dy = entry.position.y - my_pos.y;
+            if dx * dx + dy * dy > range_sq {
+                return;
+            }
+            if map::detectable_t(terrain, my_pos, entry.position, tick < entry.revealed_until) {
                 dst.push(j);
                 added_moved = true;
             }
-        }
+        });
         if added_moved {
-            sort_seen(units, u.nav.position, dst);
+            sort_seen(units, my_pos, dst);
         }
     }
 }
@@ -103,8 +114,10 @@ pub(crate) fn refresh_post_movement(
 #[cfg(test)]
 pub(crate) fn observe_all(units: &[Unit], map: &ArenaMap, index: usize, tick: u32) -> Vec<usize> {
     let cache = TerrainCache::without_neighbors(map);
+    let mut spatial = SpatialGrid::new(map.width, map.height);
+    spatial.rebuild(units);
     let mut out = Vec::new();
-    observe_all_into(units, cache.view(map), index, tick, &mut out);
+    observe_all_with_grid(units, &spatial, cache.view(map), index, tick, &mut out);
     out
 }
 
@@ -146,6 +159,7 @@ mod tests {
         });
         let cache = TerrainCache::without_neighbors(&map);
         let terrain = cache.view(&map);
+        let mut spatial = SpatialGrid::new(map.width, map.height);
 
         let mut units = vec![
             make_unit(1, 0, 3.5, 4.5),  // stationary observer
@@ -155,9 +169,10 @@ mod tests {
             make_unit(5, 1, 11.5, 7.5), // moves behind wall out of sight of 2
         ];
         let tick = 5;
+        spatial.rebuild(&units);
         let mut pre = vec![Vec::new(); units.len()];
         for (i, slot) in pre.iter_mut().enumerate() {
-            observe_all_into(&units, terrain, i, tick, slot);
+            observe_all_with_grid(&units, &spatial, terrain, i, tick, slot);
         }
 
         // Move units 1 (index 1), 3 (index 3), and 4 (index 4); keep indices 0 and 2 stationary.
@@ -165,13 +180,14 @@ mod tests {
         units[3].nav.position = Point { x: 6.5, y: 4.5 };
         units[4].nav.position = Point { x: 12.5, y: 7.5 };
         let moved = [false, true, false, true, true];
+        spatial.rebuild(&units);
 
         let mut post = vec![Vec::new(); units.len()];
-        refresh_post_movement(&units, terrain, tick, &pre, &moved, &mut post);
+        refresh_post_movement(&units, &spatial, terrain, tick, &pre, &moved, &mut post);
 
         for (i, got) in post.iter().enumerate() {
             let mut expected = Vec::new();
-            observe_all_into(&units, terrain, i, tick, &mut expected);
+            observe_all_with_grid(&units, &spatial, terrain, i, tick, &mut expected);
             assert_eq!(got, &expected, "mismatch for unit index {i}");
         }
     }

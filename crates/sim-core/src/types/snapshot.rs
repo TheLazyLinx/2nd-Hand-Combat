@@ -93,3 +93,12 @@ pub struct Snapshot {
     pub units: Vec<UnitSnapshot>,
     pub result: Option<BattleResult>,
 }
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS), ts(rename_all = "camelCase"))]
+#[serde(rename_all = "camelCase")]
+pub struct UnitInventoryUpdate {
+    pub unit_id: u32,
+    pub version: u32,
+    pub inventory: InventorySnapshot,
+}

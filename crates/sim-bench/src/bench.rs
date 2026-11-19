@@ -28,6 +28,7 @@ pub struct BenchResult {
     pub item_actions_ms: f64,
     pub combat_ms: f64,
     pub snapshot_json_ms: f64,
+    pub snapshot_bin_ms: f64,
 }
 
 fn spawn_sides(per_side: u32, map: &ArenaMap, route_pref: RoutePreference) -> Vec<UnitPlacement> {
@@ -126,6 +127,42 @@ fn spawn_grid(per_side: u32, map: &ArenaMap, route_pref: RoutePreference) -> Vec
     out
 }
 
+fn spawn_contact_grid(
+    per_side: u32,
+    map: &ArenaMap,
+    route_pref: RoutePreference,
+) -> Vec<UnitPlacement> {
+    let mut out = Vec::with_capacity((per_side * 2) as usize);
+    let mut id = 1;
+    let mut doctrine = catalog().default_doctrine;
+    doctrine.position_preference = PositionPreference::Balanced;
+    doctrine.route_preference = route_pref;
+    let rows = (map.height - 2).max(1);
+    let mid = map.width as f64 / 2.0;
+    for faction in 0..2u32 {
+        for idx in 0..per_side {
+            let col = idx / rows;
+            let row = idx % rows;
+            let x = if faction == 0 {
+                mid - 4.5 - col as f64
+            } else {
+                mid + 4.5 + col as f64
+            };
+            let y = 1.5 + row as f64;
+            out.push(UnitPlacement {
+                id,
+                faction,
+                definition_id: "infantry".into(),
+                position: Point { x, y },
+                doctrine: doctrine.clone(),
+                loadout: None,
+            });
+            id += 1;
+        }
+    }
+    out
+}
+
 fn run_one(
     name: &str,
     map: ArenaMap,
@@ -151,7 +188,10 @@ fn run_one(
     let mut item_actions_ns = 0u64;
     let mut combat_ns = 0u64;
     let mut snapshot_json_ns = 0u64;
+    let mut snapshot_bin_ns = 0u64;
     let mut snapshot_samples = 0usize;
+    let mut bin_buf = Vec::new();
+    let mut last_inv_version = 0u32;
 
     let wall_start = Instant::now();
     while !battle.is_finished()
@@ -175,6 +215,17 @@ fn run_one(
             let json = serde_json::to_string(&snap).expect("serialize snapshot");
             std::hint::black_box(json.len());
             snapshot_json_ns += t0.elapsed().as_nanos() as u64;
+
+            let t1 = Instant::now();
+            battle.write_compact_units(&mut bin_buf);
+            if let Some((ver, inv)) = battle.unit_inventory_if_changed(1, last_inv_version) {
+                last_inv_version = ver;
+                let inv_json = serde_json::to_string(&inv).expect("serialize inspected inventory");
+                std::hint::black_box(inv_json.len());
+            }
+            std::hint::black_box(bin_buf.len());
+            snapshot_bin_ns += t1.elapsed().as_nanos() as u64;
+
             snapshot_samples += 1;
         }
     }
@@ -214,6 +265,7 @@ fn run_one(
         item_actions_ms: to_mean_ms(item_actions_ns, steps),
         combat_ms: to_mean_ms(combat_ns, steps),
         snapshot_json_ms: to_mean_ms(snapshot_json_ns, snapshot_samples),
+        snapshot_bin_ms: to_mean_ms(snapshot_bin_ns, snapshot_samples),
     }
 }
 
@@ -276,6 +328,14 @@ pub fn run_benchmarks(config: &BenchConfig) -> Vec<BenchResult> {
                 config.max_secs_per_scenario,
             ));
         }
+        let contact_units = spawn_contact_grid(500, &open128, RoutePreference::Fastest);
+        results.push(run_one(
+            "sweep-1000-contact",
+            open128.clone(),
+            contact_units,
+            if config.quick { 10 } else { 40 },
+            config.max_secs_per_scenario,
+        ));
     }
 
     results
@@ -292,15 +352,15 @@ pub fn format_bench_table(results: &[BenchResult], show_sweep_note: bool) -> Str
         ));
     }
     out.push_str(
-        "\n### Mean stage breakdown (ms / step; snapshot JSON is per published snapshot)\n\n",
+        "\n### Mean stage breakdown (ms / step; SnapJSON & SnapBin are per published snapshot)\n\n",
     );
     out.push_str(
-        "| Scenario | Sust | Percept | Decide | Move | PostPerc | ItemAct | Combat | SnapJSON |\n",
+        "| Scenario | Sust | Percept | Decide | Move | PostPerc | ItemAct | Combat | SnapJSON | SnapBin |\n",
     );
-    out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+    out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
     for r in results {
         out.push_str(&format!(
-            "| {} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} |\n",
+            "| {} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} | {:.4} |\n",
             r.name,
             r.sustainment_ms,
             r.perception_ms,
@@ -309,7 +369,8 @@ pub fn format_bench_table(results: &[BenchResult], show_sweep_note: bool) -> Str
             r.post_perception_ms,
             r.item_actions_ms,
             r.combat_ms,
-            r.snapshot_json_ms
+            r.snapshot_json_ms,
+            r.snapshot_bin_ms
         ));
     }
     if show_sweep_note {

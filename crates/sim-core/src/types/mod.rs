@@ -42,6 +42,7 @@ pub fn export_typescript_types() -> String {
     collector.visit::<Catalog>();
     collector.visit::<Scenario>();
     collector.visit::<Snapshot>();
+    collector.visit::<UnitInventoryUpdate>();
     collector.visit::<Validation>();
     collector.visit::<ScenarioAnalysis>();
 
@@ -317,6 +318,16 @@ mod ts_export_tests {
         let result = snap.result.as_ref().expect("timeout result");
         assert_json_keys_match_ts(&decls, "BattleResult", result, false);
         assert_json_keys_match_ts(&decls, "FactionResult", &result.factions[0], false);
+        assert_json_keys_match_ts(
+            &decls,
+            "UnitInventoryUpdate",
+            &UnitInventoryUpdate {
+                unit_id: 1,
+                version: 1,
+                inventory: snap.units[0].inventory.clone(),
+            },
+            false,
+        );
 
         assert_enum_variants_match_ts(
             &decls,

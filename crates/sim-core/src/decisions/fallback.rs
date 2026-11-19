@@ -108,7 +108,7 @@ pub(crate) fn propose(ctx: &DecisionContext<'_>, scratch: &mut SearchScratch) ->
             }
         }
     }
-    for &ally in &ctx.input.allies {
+    for &ally in ctx.input.allies {
         if me.nav.position.distance(ally) <= radius {
             targets.push(ally);
         }
