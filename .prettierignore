@@ -1,0 +1,11 @@
+dist/
+target/
+.tools/
+.github/workflows/
+apps/web/src/generated/
+test-results/
+playwright-report/
+package-lock.json
+Cargo.lock
+*.md
+*.log

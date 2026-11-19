@@ -1,0 +1,82 @@
+name: Verify
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Build, lint, test, and browser verification
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install pinned Rust toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustc --version
+          cargo clippy --version
+          cargo fmt --version
+          rustup target list --installed | grep -qx wasm32-unknown-unknown
+
+      - name: Install pinned wasm-pack and cargo-deny
+        shell: bash
+        run: |
+          set -euo pipefail
+          tools_dir="$(mktemp -d "$RUNNER_TEMP/verify-tools.XXXXXX")"
+
+          install_bin() {
+            local name="$1" url="$2" sha256="$3"
+            local archive="$tools_dir/$name.tar.gz"
+            local extract="$tools_dir/$name-extract"
+            mkdir -p "$extract"
+            curl --fail --silent --show-error --location --retry 3 "$url" --output "$archive"
+            printf '%s  %s\n' "$sha256" "$archive" | sha256sum --check
+            tar -xzf "$archive" -C "$extract"
+            local bin
+            bin="$(find "$extract" -type f -name "$name" | head -n 1)"
+            if [ -z "$bin" ]; then
+              echo "Binary $name not found in archive" >&2
+              exit 1
+            fi
+            cp "$bin" "$tools_dir/$name"
+            chmod +x "$tools_dir/$name"
+          }
+
+          install_bin wasm-pack \
+            https://github.com/wasm-bindgen/wasm-pack/releases/download/v0.15.1/wasm-pack-v0.15.1-x86_64-unknown-linux-musl.tar.gz \
+            410101009739b9d01c7d5affaaad6e9c9a24b4cba6791a4805db8e89b9bf7af2
+
+          install_bin cargo-deny \
+            https://github.com/EmbarkStudios/cargo-deny/releases/download/0.21.0/cargo-deny-0.21.0-x86_64-unknown-linux-musl.tar.gz \
+            a2170b854ff697e79e39c4c538981c9c1bdd803addbae6719a4cb66b4585a903
+
+          echo "$tools_dir" >> "$GITHUB_PATH"
+          "$tools_dir/wasm-pack" --version
+          "$tools_dir/cargo-deny" --version
+
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Run full verification
+        run: npm run verify

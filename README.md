@@ -8,7 +8,7 @@ The current browser target is desktop Chromium. Rust owns the simulation and run
 
 ## Development
 
-Install Node.js 22.12 or newer, stable Rust with the `wasm32-unknown-unknown` target, and `wasm-pack`. The Rust Clippy and rustfmt components are needed for their checks. On Windows, the usual MSVC Rust toolchain requires the Visual Studio C++ build tools. This workspace can instead use a portable GNU toolchain under `.tools`; `scripts/tooling.mjs` picks it up automatically when present. `.tools` is local tooling, not a prerequisite for other environments.
+Install Node.js 22.12 or newer, `rustup` (which reads the pinned toolchain, `clippy`, `rustfmt`, and `wasm32-unknown-unknown` target from `rust-toolchain.toml`), `wasm-pack`, and `cargo-deny` (needed for `npm run deny:rust` and `npm run verify`). On Windows, the usual MSVC Rust toolchain requires the Visual Studio C++ build tools. This workspace can instead use a portable GNU toolchain under `.tools`; `scripts/tooling.mjs` picks it up automatically when present. `.tools` is local tooling, not a prerequisite for other environments.
 
 From the repository root:
 
@@ -23,13 +23,21 @@ The Playwright browser installation is needed once per environment for browser t
 Available checks and production commands:
 
 ```sh
-npm run build       # Build WASM and the production site in dist/
-npm run preview     # Serve an existing production build locally
-npm run check       # Svelte and TypeScript checks
-npm run test:rust   # Native Rust tests
-npm run lint:rust   # Clippy
-npm run fmt:check   # Rust formatting check
-npm run test:e2e    # Build and run Playwright browser tests
+npm run verify:fast     # Fast verification: Rust, web lint/fmt, boundaries, privacy, build, type checks, smoke e2e
+npm run verify          # Full pre-merge verification: everything in verify:fast plus cargo-deny and all browser tests
+npm run build           # Build WASM and the production site in dist/
+npm run preview         # Serve an existing production build locally
+npm run check           # Svelte and TypeScript checks
+npm run fmt:web         # Format TypeScript, Svelte, CSS, and scripts with Prettier
+npm run fmt:web:check   # Check web formatting
+npm run lint:web        # ESLint (including module boundary rules)
+npm run test:boundaries # Regression tests for ESLint boundary rules
+npm run test:rust       # Native Rust tests (including sim-core boundary tests)
+npm run lint:rust       # Clippy
+npm run fmt:check       # Rust formatting check
+npm run deny:rust       # Rust dependency licence, advisory, and source check
+npm run test:e2e        # Build and run all Playwright browser tests
+npm run test:e2e:fast   # Build and run non-stress Playwright browser tests
 ```
 
 `npm run check` requires generated WASM bindings, created by `npm run dev` or `npm run build`. Native tests exercise the simulation, and browser tests exercise the real Worker/WASM path.

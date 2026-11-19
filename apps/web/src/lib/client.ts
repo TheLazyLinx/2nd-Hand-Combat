@@ -18,7 +18,12 @@ export class BattleClient {
     this.worker.onmessage = (event: MessageEvent<WorkerReply>) => {
       if (this.disposed) return;
       const message = event.data;
-      if ('battleId' in message && message.battleId !== undefined && message.battleId !== this.battleId) return;
+      if (
+        'battleId' in message &&
+        message.battleId !== undefined &&
+        message.battleId !== this.battleId
+      )
+        return;
       if (message.type === 'validation') {
         const pending = this.take(message.requestId);
         pending?.resolve(message.validation as never);
@@ -30,7 +35,7 @@ export class BattleClient {
         this.onMessage(message);
       }
     };
-    this.worker.onerror = event => {
+    this.worker.onerror = (event) => {
       event.preventDefault();
       this.fail(event.message || 'The simulation Worker failed to load.');
     };
@@ -56,14 +61,18 @@ export class BattleClient {
     this.worker.postMessage(message);
   }
 
-  initialize() { this.send({ type: 'initialize' }); }
+  initialize() {
+    this.send({ type: 'initialize' });
+  }
 
   validate(scenario: Scenario, forStart: boolean): Promise<Validation> {
     if (this.disposed) return Promise.reject(new Error('This simulation session has been closed.'));
     const requestId = ++this.requestId;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.take(requestId)?.reject(new Error('The simulation did not respond to validation. Reopen Skirmish to retry.'));
+        this.take(requestId)?.reject(
+          new Error('The simulation did not respond to validation. Reopen Skirmish to retry.'),
+        );
       }, 10_000);
       this.pending.set(requestId, { resolve, reject, timer });
       this.send({ type: 'validate', requestId, scenario, forStart });
@@ -87,8 +96,12 @@ export class BattleClient {
     return this.battleId;
   }
 
-  pause() { this.send({ type: 'pause', battleId: this.battleId }); }
-  resume() { this.send({ type: 'resume', battleId: this.battleId }); }
+  pause() {
+    this.send({ type: 'pause', battleId: this.battleId });
+  }
+  resume() {
+    this.send({ type: 'resume', battleId: this.battleId });
+  }
 
   reset() {
     this.send({ type: 'reset', battleId: ++this.battleId });
@@ -98,7 +111,8 @@ export class BattleClient {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
-    for (const id of this.pending.keys()) this.take(id)?.reject(new Error('The simulation session was closed.'));
+    for (const id of this.pending.keys())
+      this.take(id)?.reject(new Error('The simulation session was closed.'));
     this.worker.terminate();
   }
 }

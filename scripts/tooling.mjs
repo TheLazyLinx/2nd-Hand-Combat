@@ -15,14 +15,21 @@ export function toolEnvironment() {
     paths.push(join(localCargo, 'bin'));
   }
   // On Windows the environment key may be "Path" rather than "PATH".
-  const pathKey = Object.keys(env).find(key => key.toLowerCase() === 'path') ?? 'PATH';
+  const pathKey = Object.keys(env).find((key) => key.toLowerCase() === 'path') ?? 'PATH';
   env[pathKey] = [...paths, env[pathKey] ?? ''].join(delimiter);
   return env;
 }
 export function runTool(command, args) {
-  const result = spawnSync(command, args, { cwd: root, env: toolEnvironment(), stdio: 'inherit', windowsHide: true });
+  const result = spawnSync(command, args, {
+    cwd: root,
+    env: toolEnvironment(),
+    stdio: 'inherit',
+    windowsHide: true,
+  });
   if (result.error) {
-    console.error(`Cannot run ${command}: ${result.error.message}. See README.md for development prerequisites.`);
+    console.error(
+      `Cannot run ${command}: ${result.error.message}. See README.md for development prerequisites.`,
+    );
     process.exit(1);
   }
   if (result.status !== 0) process.exit(result.status ?? 1);
