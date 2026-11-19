@@ -1,0 +1,168 @@
+/* Shared layout and control styles for MapMaker and its focused subcomponents.
+ * Scoped under .maker and deliberately excluding section.editor so DoctrineEditor
+ * and InventoryDisplay keep their shared styles from style.css. */
+
+.maker {
+  padding: 1rem;
+  min-height: 100vh;
+  background: #e9e4d4;
+  color: #293126;
+}
+.maker header,
+.maker .map-tools,
+.maker .tools,
+.maker .controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.maker header h1 {
+  margin: 0 auto 0 0;
+  font-size: 32px;
+}
+.maker h2 {
+  font-size: 23px;
+  margin-bottom: 0.5rem;
+}
+.maker :is(header, .map-tools, .tools, .controls, aside, .modal) button {
+  border: 1px solid #a5aa98;
+  background: #f5f2e8;
+  color: #364033;
+  padding: 7px 10px;
+  font-size: 12px;
+  font-weight: 600;
+}
+.maker :is(header, .map-tools, .tools, .controls, aside, .modal) button:not(:disabled):hover {
+  background: #e2e4d5;
+}
+.maker .tools button {
+  text-transform: capitalize;
+}
+.maker .layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 1rem;
+  margin-top: 1rem;
+}
+.maker .map {
+  height: min(60vh, 650px);
+  min-height: 320px;
+  background: #aaa;
+  border: 6px solid #424b3b;
+  overflow: hidden;
+}
+.maker .map-area section:not(.editor),
+.maker aside section {
+  background: #f8f5ea;
+  padding: 1rem;
+  margin-top: 1rem;
+}
+.maker aside label {
+  display: block;
+  margin: 0.6rem 0;
+  font-size: 13px;
+}
+.maker aside label input,
+.maker aside textarea {
+  display: block;
+  margin-top: 0.3rem;
+}
+.maker aside label.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.maker aside label.checkbox-row input {
+  display: inline-block;
+  margin-top: 0;
+}
+.maker :is(.controls, aside, .modal) input,
+.maker :is(.controls, aside, .modal) textarea,
+.maker :is(.controls, aside, .modal) select {
+  max-width: 100%;
+  padding: 0.4rem;
+  border: 1px solid #b8bcaa;
+  background: #faf8ef;
+  color: #30382d;
+  font: inherit;
+}
+.maker textarea {
+  width: 100%;
+  min-height: 4rem;
+}
+.maker :is(.controls, aside, .modal) input[type='number'] {
+  width: 6rem;
+}
+.maker .controls {
+  font-size: 12px;
+}
+.maker .controls label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.maker .tools,
+.maker .controls {
+  margin-top: 0.6rem;
+}
+.maker .active {
+  outline: 2px solid #315f62;
+  background: #dde5d9;
+}
+.maker .error {
+  color: #a33;
+}
+.maker .library-item {
+  padding: 0.7rem 0;
+  border-top: 1px solid #b8bcaa;
+}
+.maker .library-item strong {
+  display: block;
+  margin-bottom: 0.4rem;
+}
+.maker .faction-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0.4rem 0;
+  flex-wrap: wrap;
+}
+.maker .faction-row input[type='color'] {
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+}
+.maker .faction-row input:not([type='color']) {
+  flex: 1 1 5.5rem;
+  min-width: 0;
+}
+.maker .modal {
+  position: fixed;
+  inset: 0;
+  width: auto;
+  padding: 1rem;
+  background: #202b22b8;
+  box-shadow: none;
+  display: grid;
+  place-items: center;
+  z-index: 20;
+}
+.maker .modal > div {
+  width: min(100%, 420px);
+  background: #faf7ea;
+  padding: 2rem;
+  box-shadow: 0 15px 60px #17211755;
+}
+.maker .modal label {
+  display: block;
+  margin: 1rem 0;
+}
+.maker .modal button {
+  margin: 0.5rem 0.3rem 0 0;
+}
+@media (max-width: 850px) {
+  .maker .layout {
+    grid-template-columns: 1fr;
+  }
+}

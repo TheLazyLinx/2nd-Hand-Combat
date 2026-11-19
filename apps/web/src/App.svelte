@@ -1,15 +1,18 @@
 <script lang="ts">
+  /** Top-level application shell managing screen navigation, options, and retained MapMaker session. */
   import { onMount } from 'svelte';
   import MapMaker from './components/MapMaker.svelte';
   import Skirmish from './components/Skirmish.svelte';
   import type { EditorSession } from './lib/editor';
   import type { ScenarioDocument } from './lib/types';
-  let screen: 'home' | 'options' | 'maker' | 'skirmish' = 'home';
-  let editorSession: EditorSession | null = null;
-  let initialDocument: ScenarioDocument | null = null;
-  let showHp = true;
-  let fullscreen = false;
-  let error = '';
+
+  let screen = $state<'home' | 'options' | 'maker' | 'skirmish'>('home');
+  let editorSession = $state.raw<EditorSession | null>(null);
+  let initialDocument = $state.raw<ScenarioDocument | null>(null);
+  let showHp = $state(true);
+  let fullscreen = $state(false);
+  let error = $state('');
+
   async function toggleFullscreen() {
     error = '';
     try {

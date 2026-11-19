@@ -12,19 +12,24 @@ Area guide for Svelte, TypeScript, Worker, and PixiJS frontend work. Follow root
 | `src/lib/types.ts` | Re-exports generated simulation wire types from `src/generated/sim-types.ts` and defines browser-only contracts (`ScenarioDocument`, `WorkerCommand`, `WorkerReply`). Never hand-copy Rust types here. |
 | `src/generated/sim-types.ts` | Auto-generated from `crates/sim-core` via `npm run gen:types`. Never edit by hand. |
 | `src/generated/wasm/` | Auto-generated WASM bindings from `npm run build` / `npm run dev`. Never edit by hand. |
-| `src/lib/battlefield.ts` | `Battlefield`: PixiJS WebGL presentation layer (terrain cache, contours, editor gizmos, camera, dynamic faction colours, texture-batched unit sprites, batched HP overlays, viewport culling, interpolated `Snapshot` and `CompactSnapshotView` frames). Display only — never resolves gameplay. |
+| `src/lib/battlefield.ts` | `Battlefield`: thin PixiJS presentation facade composing `MapView`, `BattleLayer`, and `EditorOverlay`. Display only — never resolves gameplay. |
+| `src/lib/renderer/map-view.ts` | `MapView`: PixiJS application lifecycle, camera pan/zoom/fit, pointer/hover coordinate mapping, static terrain & contour texture caching, and viewport culling bounds. |
+| `src/lib/renderer/battle-layer.ts` | `BattleLayer`: cached per-faction procedural unit textures, batched unit sprites and HP/selection overlays, viewport culling, and 60 fps interpolation/tracers over `Snapshot` and `CompactSnapshotView` frames. |
+| `src/lib/renderer/editor-overlay.ts` | `EditorOverlay`: Map Maker gizmos (patrol path, resize preview mask, selection outlines, display-binned steep-edge markers, validation issue rings, brush preview). |
 | `src/lib/factions.ts` | Faction display helpers (colour hex conversion, lookup, palette generation), unit definition lookup, and setup-screen inventory preview. |
 | `src/lib/scenario-library.ts` | IndexedDB scenario library (`2nd-hand-combat` / `scenarios`), 8 MiB JSON import/export, portable envelope validation, and in-memory legacy schema migration (v1/v2 → v3). Leaves gameplay/field validation to Rust. |
-| `src/lib/editor.ts` | Pure Map Maker helpers (`EditorSession`, `blankDocument`, terrain `paint`, `resizeScenario`, undo/redo snapshots). |
-| `src/App.svelte` | Top-level app shell: home splash, options, screen transitions, and retained Map Maker session state. |
-| `src/components/Skirmish.svelte` | Skirmish setup, preset/library loading, live battle controls, and unit/terrain inspection. |
-| `src/components/MapMaker.svelte` | Scenario authoring workspace, tools, resize confirmation, library dialogs, and Test-in-Skirmish bridge. |
+| `src/lib/editor.ts` | Pure Map Maker helpers (`EditorSession`, `blankDocument`, terrain `paint`, brush strokes, hit-testing, entity mutations, `resizeScenario`, undo/redo snapshots). |
+| `src/App.svelte` | Top-level app shell (Svelte 5 runes): home splash, options, screen transitions, and retained Map Maker session state. |
+| `src/components/Skirmish.svelte` | Skirmish workspace orchestrator (Worker lifecycle, preset/library loading, deployment, live battle state) delegating UI sections to `components/skirmish/`. |
+| `src/components/skirmish/` | Focused Skirmish subcomponents: `SkirmishSetupBar.svelte` (camera, map picker, time limit, terrain inspector/legend, coordinate deploy), `SkirmishActionBar.svelte` (phase status & battle controls), `LiveUnitStatus.svelte` (live terrain + inventory readout). |
+| `src/components/MapMaker.svelte` | Scenario authoring orchestrator (session, undo/redo, Worker analysis, library persistence, canvas gestures) delegating UI sections to `components/maker/`. |
+| `src/components/maker/` | Focused Map Maker subcomponents: `MakerToolbar.svelte` (tools, brush/coordinate inputs, terrain inspector/legend), `MakerSelectionPanel.svelte` (selected soldier/obstacle/patrol controls + validation), `MakerSidebar.svelte` (scenario metadata, factions, map resize, entity lists, library), `MakerDialogs.svelte` (rename/delete/unsaved-changes modals). |
 | `src/components/DoctrineEditor.svelte` | Per-soldier doctrine editor controls (bounds sourced from `Catalog.doctrineRules`). |
 | `src/components/FactionPanel.svelte` | Per-faction roster and add-soldier trigger. |
 | `src/components/InventoryDisplay.svelte` | Starting and live soldier inventory, hands, weight/volume, and sustainment readout. |
 | `src/components/Results.svelte` | After-action battle results summary. |
 | `src/components/UnitPicker.svelte` | Modal unit-type picker for deployment. |
-| `src/main.ts`, `src/style.css` | Application mount point and shared styles. |
+| `src/main.ts`, `src/style.css`, `src/maker.css` | Application mount point, global/Skirmish styles, and Map Maker styles. |
 
 ## Enforced ESLint boundaries
 
@@ -33,8 +38,8 @@ Module boundaries are enforced by [eslint.config.js](../../eslint.config.js) (`n
 - **WASM isolation:** Only `apps/web/src/worker.ts` may import `generated/wasm/sim_wasm*`.
 - **Worker isolation:** No module outside `worker.ts` may import `worker.ts` directly; UI code talks to the Worker only through `BattleClient`.
 - **Single Worker factory:** Only `apps/web/src/lib/client.ts` (`BattleClient`) may invoke `new Worker(...)`.
-- **Worker purity:** `apps/web/src/worker.ts` cannot import `pixi.js`, `svelte`, `components/*`, `lib/battlefield*`, or `lib/client*`.
-- **Renderer purity:** `apps/web/src/lib/battlefield.ts` is snapshot-only presentation; it cannot import `svelte`, `lib/client`, `components/*`, `worker.ts`, or generated WASM.
+- **Worker purity:** `apps/web/src/worker.ts` cannot import `pixi.js`, `svelte`, `components/*`, `lib/battlefield*`, `lib/renderer/*`, or `lib/client*`.
+- **Renderer purity:** `apps/web/src/lib/battlefield.ts` and `apps/web/src/lib/renderer/*.ts` are snapshot-only presentation; they cannot import `svelte`, `lib/client`, `components/*`, `worker.ts`, or generated WASM.
 - **No duplicated simulation rules:** Rendering never resolves hits, movement, sight, or victory, and TypeScript never duplicates Rust gameplay validation.
 
 ## Formatting, linting, typechecking, and Svelte 5 rules
@@ -43,7 +48,7 @@ Module boundaries are enforced by [eslint.config.js](../../eslint.config.js) (`n
 - **ESLint:** `npm run lint:web` runs with `--max-warnings=0`. Fix root causes instead of disabling rules.
 - **Type checks:** `npm run check` runs `svelte-check` on `apps/web` and `tsc -p apps/web/tsconfig.worker.json`. Note: `npm run check` requires generated WASM bindings produced by `npm run build` or `npm run dev`.
 - **Contract sync:** `npm run check:types-sync` fails if `src/generated/sim-types.ts` differs from `crates/sim-core`. Run `npm run gen:types` after any Rust wire-type edit.
-- **Svelte 5 runes ([ADR 0005](../../docs/decisions/0005-svelte-5-runes-migration.md)):** Author all new components with Svelte 5 runes (`$props`, `$state`, `$derived`, `$effect`), never `export let` or `$:`. Existing components migrate one at a time in Phase 7 with browser tests green after each. Keep files focused (under ~400 lines where practical) with a short header comment stating ownership.
+- **Svelte 5 runes ([ADR 0005](../../docs/decisions/0005-svelte-5-runes-migration.md)):** Every component in `apps/web/src` uses Svelte 5 runes (`$props`, `$state`, `$state.raw`, `$derived`, `$effect`), with zero `export let` or `$:` syntax. Use `$state.raw` for plain domain objects passed to `structuredClone` or `postMessage` (avoiding Svelte proxy clone errors). Keep files focused (under ~400 lines where practical) with a short header comment stating ownership.
 - **Browser tests (`tests/browser/*.spec.ts`, Playwright desktop Chromium, real Worker/WASM path):**
   - `@smoke` (`npm run test:browser:smoke`, part of `npm run verify:fast`): fast end-to-end checks across Skirmish, doctrine, inventory, Map Maker, and persistence.
   - Non-`@stress` (`npm run test:e2e:fast` / `npm run test:browser:fast`): full functional browser suite excluding long performance stress runs.

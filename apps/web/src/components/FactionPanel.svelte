@@ -1,19 +1,36 @@
 ﻿<script lang="ts">
+  /** Per-faction unit roster panel displaying live behavior/HP status and deployment button. */
   import { frameUnitSummary, type LiveFrame } from '../lib/compact-snapshot';
   import { behaviorLabel, factionColorHex, unitDefinition } from '../lib/factions';
   import type { Catalog, FactionDefinition, Scenario } from '../lib/types';
-  export let faction: FactionDefinition;
-  export let side: number;
-  export let scenario: Scenario | null;
-  export let snapshot: LiveFrame | null;
-  export let catalog: Catalog | null;
-  export let selected: number | null;
-  export let editable: boolean;
-  export let busy: boolean;
-  export let onSelect: (id: number) => void;
-  export let onAdd: () => void;
 
-  $: roster = scenario?.units.filter((u) => u.faction === faction.id) ?? [];
+  interface Props {
+    faction: FactionDefinition;
+    side: number;
+    scenario: Scenario | null;
+    snapshot: LiveFrame | null;
+    catalog: Catalog | null;
+    selected: number | null;
+    editable: boolean;
+    busy: boolean;
+    onSelect: (id: number) => void;
+    onAdd: () => void;
+  }
+
+  let {
+    faction,
+    side,
+    scenario,
+    snapshot,
+    catalog,
+    selected,
+    editable,
+    busy,
+    onSelect,
+    onAdd,
+  }: Props = $props();
+
+  const roster = $derived(scenario?.units.filter((u) => u.faction === faction.id) ?? []);
 </script>
 
 <section class="faction" data-testid={`faction-${faction.id}`}>

@@ -1,12 +1,18 @@
 ﻿<script lang="ts">
+  /** Modal dialog allowing players to choose a catalog unit type before battlefield placement. */
   import { onMount } from 'svelte';
   import type { UnitDefinition } from '../lib/types';
-  export let name: string;
-  export let units: UnitDefinition[];
-  export let onClose: () => void;
-  export let onChoose: (definitionId: string) => void;
-  let dialog: HTMLDialogElement;
-  onMount(() => dialog.showModal());
+
+  interface Props {
+    name: string;
+    units: UnitDefinition[];
+    onClose: () => void;
+    onChoose: (definitionId: string) => void;
+  }
+
+  let { name, units, onClose, onChoose }: Props = $props();
+  let dialog: HTMLDialogElement | undefined;
+  onMount(() => dialog?.showModal());
 </script>
 
 <dialog
