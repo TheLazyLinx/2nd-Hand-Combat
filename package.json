@@ -3,7 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "engines": { "node": "^20.19.0 || >=22.12.0" },
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
   "scripts": {
     "dev": "node scripts/build-wasm.mjs --dev && vite --config apps/web/vite.config.ts",
     "build": "node scripts/build-wasm.mjs && vite build --config apps/web/vite.config.ts",
@@ -11,19 +13,42 @@
     "check": "svelte-check --workspace apps/web --tsconfig ./tsconfig.json && tsc -p apps/web/tsconfig.worker.json",
     "check:privacy": "node scripts/check-privacy.mjs",
     "test:privacy": "node --test tests/privacy.test.mjs",
-    "test:rust": "node scripts/tool.mjs cargo test --workspace",
-    "lint:rust": "node scripts/tool.mjs cargo clippy --workspace --all-targets -- -D warnings",
+    "test:boundaries": "node --test tests/boundaries.test.mjs",
+    "gen:types": "node scripts/gen-types.mjs",
+    "check:types-sync": "node scripts/gen-types.mjs --check",
+    "test:rust": "node scripts/tool.mjs cargo test --workspace --all-features",
+    "lint:rust": "node scripts/tool.mjs cargo clippy --workspace --all-targets --all-features -- -D warnings",
     "fmt:check": "node scripts/tool.mjs cargo fmt --all -- --check",
-    "test:e2e": "npm run build && playwright test",
-    "test:browser": "playwright test"
+    "deny:rust": "node scripts/tool.mjs cargo deny check",
+    "fmt:web": "prettier --write .",
+    "fmt:web:check": "prettier --check .",
+    "lint:web": "eslint . --max-warnings=0",
+    "test:e2e": "npm run build && npm run test:browser",
+    "test:e2e:fast": "npm run build && npm run test:browser:fast",
+    "test:browser": "playwright test",
+    "test:browser:fast": "playwright test --grep-invert @stress",
+    "test:browser:smoke": "playwright test --grep @smoke",
+    "verify:fast": "node scripts/verify.mjs --fast",
+    "verify": "node scripts/verify.mjs"
   },
-  "dependencies": { "pixi.js": "8.22.0", "svelte": "5.57.3" },
+  "dependencies": {
+    "pixi.js": "8.22.0",
+    "svelte": "5.57.3"
+  },
   "devDependencies": {
+    "@eslint/js": "10.0.1",
     "@playwright/test": "1.65.0",
     "@sveltejs/vite-plugin-svelte": "7.3.1",
     "@types/node": "^22.0.0",
+    "eslint": "10.15.0",
+    "eslint-config-prettier": "10.1.8",
+    "eslint-plugin-svelte": "3.24.1",
+    "globals": "17.14.0",
+    "prettier": "3.10.1",
+    "prettier-plugin-svelte": "4.2.0",
     "svelte-check": "4.7.8",
     "typescript": "5.9.3",
+    "typescript-eslint": "8.73.0",
     "vite": "8.3.6"
   }
 }

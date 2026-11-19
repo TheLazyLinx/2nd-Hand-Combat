@@ -1,6 +1,18 @@
-import init, { analyze_scenario_json, catalog_json, validate_scenario_json, WasmBattle } from './generated/sim_wasm';
-import wasmUrl from './generated/sim_wasm_bg.wasm?url';
-import type { Catalog, ScenarioAnalysis, Snapshot, Validation, WorkerCommand, WorkerReply } from './lib/types';
+import init, {
+  analyze_scenario_json,
+  catalog_json,
+  validate_scenario_json,
+  WasmBattle,
+} from './generated/wasm/sim_wasm';
+import wasmUrl from './generated/wasm/sim_wasm_bg.wasm?url';
+import type {
+  Catalog,
+  ScenarioAnalysis,
+  Snapshot,
+  Validation,
+  WorkerCommand,
+  WorkerReply,
+} from './lib/types';
 
 const STEP_MS = 50;
 let initialized = false;
@@ -47,7 +59,8 @@ function pump() {
     battle.advance(steps);
     accumulator -= steps * STEP_MS;
     const value = snapshot();
-    if (value.result || Math.floor(value.tick / 2) !== Math.floor(lastPublishedTick / 2)) publish(value);
+    if (value.result || Math.floor(value.tick / 2) !== Math.floor(lastPublishedTick / 2))
+      publish(value);
   } catch (error) {
     stop();
     send({ type: 'error', battleId, message: String(error) });
@@ -73,12 +86,16 @@ async function command(message: WorkerCommand) {
   }
   if (!initialized) throw new Error('The simulation has not initialized.');
   if (message.type === 'analyze') {
-    const analysis = JSON.parse(analyze_scenario_json(JSON.stringify(message.scenario))) as ScenarioAnalysis;
+    const analysis = JSON.parse(
+      analyze_scenario_json(JSON.stringify(message.scenario)),
+    ) as ScenarioAnalysis;
     send({ type: 'analysis', requestId: message.requestId, revision: message.revision, analysis });
     return;
   }
   if (message.type === 'validate') {
-    const validation = JSON.parse(validate_scenario_json(JSON.stringify(message.scenario), message.forStart)) as Validation;
+    const validation = JSON.parse(
+      validate_scenario_json(JSON.stringify(message.scenario), message.forStart),
+    ) as Validation;
     send({ type: 'validation', requestId: message.requestId, validation });
     return;
   }
@@ -122,12 +139,14 @@ async function command(message: WorkerCommand) {
 let queue = Promise.resolve();
 self.onmessage = (event: MessageEvent<WorkerCommand>) => {
   const message = event.data;
-  queue = queue.then(() => command(message)).catch((error: unknown) => {
-    send({
-      type: 'error',
-      ...('battleId' in message ? { battleId: message.battleId } : {}),
-      ...('requestId' in message ? { requestId: message.requestId } : {}),
-      message: String(error),
+  queue = queue
+    .then(() => command(message))
+    .catch((error: unknown) => {
+      send({
+        type: 'error',
+        ...('battleId' in message ? { battleId: message.battleId } : {}),
+        ...('requestId' in message ? { requestId: message.requestId } : {}),
+        message: String(error),
+      });
     });
-  });
 };
