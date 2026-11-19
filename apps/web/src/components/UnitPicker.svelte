@@ -1,8 +1,10 @@
 ﻿<script lang="ts">
   import { onMount } from 'svelte';
+  import type { UnitDefinition } from '../lib/types';
   export let name: string;
+  export let units: UnitDefinition[];
   export let onClose: () => void;
-  export let onChoose: () => void;
+  export let onChoose: (definitionId: string) => void;
   let dialog: HTMLDialogElement;
   onMount(() => dialog.showModal());
 </script>
@@ -25,11 +27,19 @@
     </div>
     <h2 id="modal-title">Choose a soldier</h2>
     <p>Select a unit, then click an open spot on the battlefield.</p>
-    <button class="unit-choice" data-testid="choose-infantry" onclick={onChoose}>
-      <span class="unit-icon">&#10022;</span><span>
-        <strong>Infantry</strong><small>Standard rifle soldier</small>
-      </span><b>&rarr;</b>
-    </button>
+    {#each units as unit (unit.id)}
+      <button
+        class="unit-choice"
+        data-testid={`choose-${unit.id}`}
+        onclick={() => onChoose(unit.id)}
+      >
+        <span class="unit-icon">&#10022;</span><span>
+          <strong>{unit.name}</strong><small>
+            {unit.maxHp} HP &middot; speed {unit.speed} m/s
+          </small>
+        </span><b>&rarr;</b>
+      </button>
+    {/each}
   </div>
 </dialog>
 

@@ -53,31 +53,35 @@ pub(crate) fn propose(ctx: &DecisionContext<'_>, scratch: &mut SearchScratch) ->
         return None;
     }
     let Some(enemy) = ctx.threat else {
-        return Some(Decision::hold(Behavior::Defending, None, me.patrol_index));
+        return Some(Decision::hold(
+            Behavior::Defending,
+            None,
+            me.nav.patrol_index,
+        ));
     };
 
     let tol = TUNING.score_tolerance;
-    let current = safety(ctx, me.position);
-    if let (Some(goal), Some(old_threat)) = (me.fallback_goal, me.fallback_threat) {
+    let current = safety(ctx, me.nav.position);
+    if let (Some(goal), Some(old_threat)) = (me.nav.fallback_goal, me.nav.fallback_threat) {
         let safe = safety(ctx, goal);
         if old_threat.distance(enemy) < TUNING.threat_moved_distance
             && (safe.0 > current.0 + tol
                 || (safe.0 >= current.0 - tol
-                    && me.position.distance(goal) > TUNING.fallback_arrive_distance)
-                || me.position.distance(goal) <= TUNING.fallback_arrive_distance)
+                    && me.nav.position.distance(goal) > TUNING.fallback_arrive_distance)
+                || me.nav.position.distance(goal) <= TUNING.fallback_arrive_distance)
         {
-            if me.position.distance(goal) <= TUNING.fallback_arrive_distance {
+            if me.nav.position.distance(goal) <= TUNING.fallback_arrive_distance {
                 return Some(Decision::hold(
                     Behavior::Defending,
                     Some(goal),
-                    me.patrol_index,
+                    me.nav.patrol_index,
                 ));
             }
             return Some(Decision::move_to(
                 Behavior::FallingBack,
                 goal,
                 Some(goal),
-                me.patrol_index,
+                me.nav.patrol_index,
                 None,
             ));
         }
@@ -86,7 +90,7 @@ pub(crate) fn propose(ctx: &DecisionContext<'_>, scratch: &mut SearchScratch) ->
     let radius = TUNING.fallback_radius;
     let map = ctx.terrain.map;
     let width = ctx.terrain.cache.width;
-    let (x0, x1, y0, y1) = grid_window(map, me.position, radius);
+    let (x0, x1, y0, y1) = grid_window(map, me.nav.position, radius);
 
     let mut targets = Vec::new();
     for y in y0..=y1 {
@@ -99,20 +103,20 @@ pub(crate) fn propose(ctx: &DecisionContext<'_>, scratch: &mut SearchScratch) ->
                 x: x as f64 + 0.5,
                 y: y as f64 + 0.5,
             };
-            if me.position.distance(p) <= radius {
+            if me.nav.position.distance(p) <= radius {
                 targets.push(p);
             }
         }
     }
     for &ally in &ctx.input.allies {
-        if me.position.distance(ally) <= radius {
+        if me.nav.position.distance(ally) <= radius {
             targets.push(ally);
         }
     }
 
     scratch.run_dijkstra(
         ctx.terrain,
-        me.position,
+        me.nav.position,
         ctx.threats,
         ctx.preference,
         ctx.revealed,
@@ -153,9 +157,13 @@ pub(crate) fn propose(ctx: &DecisionContext<'_>, scratch: &mut SearchScratch) ->
             Behavior::FallingBack,
             chosen.point,
             Some(chosen.point),
-            me.patrol_index,
+            me.nav.patrol_index,
             Some(route),
         ));
     }
-    Some(Decision::hold(Behavior::Defending, None, me.patrol_index))
+    Some(Decision::hold(
+        Behavior::Defending,
+        None,
+        me.nav.patrol_index,
+    ))
 }

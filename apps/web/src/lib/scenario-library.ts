@@ -1,10 +1,20 @@
-import type { Doctrine, ScenarioDocument } from './types';
+/**
+ * Portable scenario JSON parsing, v1/v2 -> v3 in-memory migration, and IndexedDB persistence.
+ *
+ * Invariant: opening legacy v1 or v2 records from IndexedDB upgrades only the in-memory copy;
+ * stored records are never rewritten automatically until an explicit Save or Rename.
+ */
+
+import { defaultLegacyFaction } from './factions';
+import type { Catalog, Doctrine, FactionDefinition, ScenarioDocument } from './types';
 
 export interface SavedScenario {
   id: string;
   updatedAt: string;
   document: ScenarioDocument;
 }
+
+export type MigrationDefaults = Pick<Catalog, 'defaultDoctrine' | 'defaultFactions'>;
 
 export const MAX_DOCUMENT_BYTES = 8 * 1024 * 1024;
 const DATABASE = '2nd-hand-combat';
@@ -31,26 +41,75 @@ function text(
     );
 }
 
-/** Upgrade only absent legacy fields. Rust validates field values, enums, and numeric limits. */
-function migrateInventoryDoctrine(
+/** Upgrade only absent legacy doctrine fields. Rust validates field values, enums, and numeric limits. */
+function migrateDoctrine(
   doctrine: Record<string, unknown>,
-  legacy: boolean,
+  schemaVersion: 1 | 2 | 3,
   defaults?: Doctrine,
 ) {
-  function introduced(key: 'grenades' | 'medical' | 'outOfAmmoBehavior'): unknown {
-    if (doctrine[key] !== undefined || !legacy) return doctrine[key];
+  function requireDefaults(): Doctrine {
     if (!defaults) throw new Error('The simulation catalog is required to open legacy scenarios.');
-    return structuredClone(defaults[key]);
+    return defaults;
   }
-  const grenades = record(introduced('grenades'), 'Grenade doctrine');
-  const medical = record(introduced('medical'), 'Medical doctrine');
-  const outOfAmmoBehavior = introduced('outOfAmmoBehavior');
+  function v1Field(key: 'grenades' | 'medical' | 'outOfAmmoBehavior'): unknown {
+    if (doctrine[key] !== undefined || schemaVersion !== 1) return doctrine[key];
+    return structuredClone(requireDefaults()[key]);
+  }
+  const grenades = record(v1Field('grenades'), 'Grenade doctrine');
+  const medical = record(v1Field('medical'), 'Medical doctrine');
+  const outOfAmmoBehavior = v1Field('outOfAmmoBehavior');
   if (typeof outOfAmmoBehavior !== 'string') throw new Error('Unknown empty-rifle behavior.');
-  return { ...doctrine, grenades, medical, outOfAmmoBehavior };
+  const fireWhileMoving =
+    doctrine.fireWhileMoving === undefined && schemaVersion < 3
+      ? requireDefaults().fireWhileMoving
+      : doctrine.fireWhileMoving;
+  if (typeof fireWhileMoving !== 'boolean')
+    throw new Error('Fire while moving doctrine must be a boolean.');
+  return { ...doctrine, grenades, medical, outOfAmmoBehavior, fireWhileMoving };
 }
 
-/** Checks portable envelope and upgrades v1 in memory; Rust owns scenario field and gameplay validation. */
-export function parseScenarioDocument(json: string, defaultDoctrine?: Doctrine): ScenarioDocument {
+/** Upgrade numeric v1/v2 faction arrays to v3 FactionDefinition objects; validate v3 faction objects. */
+function migrateFactions(
+  raw: unknown,
+  schemaVersion: 1 | 2 | 3,
+  defaultFactions?: FactionDefinition[],
+): FactionDefinition[] {
+  const entries = list(raw, 'Factions');
+  if (schemaVersion < 3) {
+    return entries.map((value, index) => {
+      if (typeof value !== 'number' || !Number.isInteger(value) || value < 0)
+        throw new Error('Legacy faction entries must be non-negative integers.');
+      return defaultLegacyFaction(value, index, defaultFactions);
+    });
+  }
+  return entries.map((value) => {
+    const f = record(value, 'Faction');
+    if (typeof f.id !== 'number' || !Number.isInteger(f.id) || f.id < 0)
+      throw new Error('Faction ID must be a non-negative integer.');
+    text(f.name, 'Faction name', 64, true);
+    if (
+      typeof f.color !== 'number' ||
+      !Number.isInteger(f.color) ||
+      f.color < 0 ||
+      f.color > 0xffffff
+    )
+      throw new Error('Faction color must be a valid 24-bit RGB integer.');
+    if (f.patrolDirection !== 'forward' && f.patrolDirection !== 'reverse')
+      throw new Error('Faction patrol direction must be forward or reverse.');
+    return {
+      id: f.id,
+      name: f.name,
+      color: f.color,
+      patrolDirection: f.patrolDirection,
+    };
+  });
+}
+
+/** Checks portable envelope and upgrades v1/v2 in memory to v3; Rust owns gameplay validation. */
+export function parseScenarioDocument(
+  json: string,
+  defaults?: MigrationDefaults,
+): ScenarioDocument {
   if (new TextEncoder().encode(json).byteLength > MAX_DOCUMENT_BYTES)
     throw new Error('Scenario files must be no larger than 8 MiB.');
   let parsed: unknown;
@@ -62,27 +121,35 @@ export function parseScenarioDocument(json: string, defaultDoctrine?: Doctrine):
   const doc = record(parsed, 'Scenario document');
   if (doc.format !== '2nd-hand-combat-scenario')
     throw new Error('This file is not a 2nd Hand Combat scenario.');
-  if (doc.schemaVersion !== 1 && doc.schemaVersion !== 2)
+  if (doc.schemaVersion !== 1 && doc.schemaVersion !== 2 && doc.schemaVersion !== 3)
     throw new Error('This scenario version is not supported.');
+  const version = doc.schemaVersion;
   text(doc.name, 'Scenario name', 100, true);
   const description = doc.description === undefined ? '' : doc.description;
   text(description, 'Description', 2000);
   const scenario = record(doc.scenario, 'Scenario');
+  const factions = migrateFactions(scenario.factions, version, defaults?.defaultFactions);
+  const loadouts = scenario.loadouts === undefined ? [] : list(scenario.loadouts, 'Loadouts');
   const units = list(scenario.units, 'Units').map((value) => {
     const unit = record(value, 'Soldier');
     const doctrine = record(unit.doctrine, 'Doctrine');
     return {
       ...unit,
-      doctrine: migrateInventoryDoctrine(doctrine, doc.schemaVersion === 1, defaultDoctrine),
+      doctrine: migrateDoctrine(doctrine, version, defaults?.defaultDoctrine),
     };
   });
   // Parsing makes a detached plain-data document. Unknown metadata has no executable behavior.
   return {
     format: '2nd-hand-combat-scenario',
-    schemaVersion: 2,
+    schemaVersion: 3,
     name: doc.name,
     description,
-    scenario: { ...scenario, units } as unknown as ScenarioDocument['scenario'],
+    scenario: {
+      ...scenario,
+      factions,
+      loadouts,
+      units,
+    } as unknown as ScenarioDocument['scenario'],
   };
 }
 
@@ -171,14 +238,14 @@ async function transaction<T>(
   });
 }
 
-export async function listScenarios(defaultDoctrine: Doctrine): Promise<SavedScenario[]> {
+export async function listScenarios(defaults: MigrationDefaults): Promise<SavedScenario[]> {
   const entries = await transaction<unknown[]>('readonly', (store) => store.getAll());
   return entries
     .map((value) => {
       const entry = record(value, 'Saved scenario');
       text(entry.id, 'Saved scenario ID', 100, true);
       text(entry.updatedAt, 'Modification time', 100, true);
-      const document = parseScenarioDocument(JSON.stringify(entry.document), defaultDoctrine);
+      const document = parseScenarioDocument(JSON.stringify(entry.document), defaults);
       return { id: entry.id, updatedAt: entry.updatedAt, document };
     })
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));

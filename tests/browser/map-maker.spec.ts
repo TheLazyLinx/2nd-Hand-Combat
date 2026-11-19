@@ -139,3 +139,40 @@ test(
     await page.screenshot({ path: info.outputPath('extreme-terrain.png') });
   },
 );
+
+test('Map Maker can add and remove factions and test a three-faction battle in Skirmish', async ({
+  page,
+}) => {
+  await page.getByRole('button', { name: 'Add faction', exact: true }).click();
+  await expect(page.getByTestId('editor-faction-2')).toBeVisible();
+  await page.getByLabel('Faction 2 name', { exact: true }).fill('East');
+  await page.getByLabel('Faction 2 name', { exact: true }).press('Tab');
+  await page.getByRole('button', { name: 'soldier', exact: true }).click();
+  for (const [factionId, col, row] of [
+    ['0', '4', '4'],
+    ['1', '8', '4'],
+    ['2', '6', '7'],
+  ] as const) {
+    await page.getByLabel('Faction', { exact: true }).selectOption(factionId);
+    await page.getByLabel('Edit column').fill(col);
+    await page.getByLabel('Edit row').fill(row);
+    await page.getByRole('button', { name: 'Apply at coordinates' }).click();
+  }
+  await expect(page.getByRole('button', { name: '#3 East', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Test battle' })).toBeEnabled();
+  await page.getByRole('button', { name: 'Test battle' }).click();
+  await expect(page.getByTestId('faction-0')).toContainText('North');
+  await expect(page.getByTestId('faction-1')).toContainText('South');
+  await expect(page.getByTestId('faction-2')).toContainText('East');
+  await page.getByTestId('start-battle').click();
+  await expect(page.getByTestId('battle-status')).toHaveText('RUNNING');
+  await page.getByRole('button', { name: /MapMaker/i }).click();
+  await page
+    .getByTestId('editor-faction-2')
+    .getByRole('button', { name: 'Remove', exact: true })
+    .click();
+  await expect(page.getByTestId('editor-faction-2')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: '#3 East', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Undo', exact: true }).click();
+  await expect(page.getByTestId('editor-faction-2')).toBeVisible();
+});

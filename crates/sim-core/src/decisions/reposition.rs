@@ -37,15 +37,15 @@ pub(crate) fn propose(ctx: &DecisionContext<'_>, scratch: &mut SearchScratch) ->
     let me = ctx.input.unit;
     let enemy = ctx.input.visible_enemy?;
     let engagement_distance = me.placement.doctrine.engagement_distance;
-    if me.position.distance(enemy) > engagement_distance {
+    if me.nav.position.distance(enemy) > engagement_distance {
         return None;
     }
 
     let tol = TUNING.score_tolerance;
-    let current = position_score(ctx, me.position);
-    if let Some(goal) = me.goal {
-        if me.behavior == Behavior::Advancing
-            && me.position.distance(goal) > TUNING.advance_arrive_distance
+    let current = position_score(ctx, me.nav.position);
+    if let Some(goal) = me.nav.goal {
+        if me.combat.behavior == Behavior::Advancing
+            && me.nav.position.distance(goal) > TUNING.advance_arrive_distance
             && goal.distance(enemy) <= engagement_distance
             && map::exposure_t(ctx.terrain, goal, enemy, ctx.input.visible_enemy_revealed) > 0.0
             && position_score(ctx, goal) <= current + tol
@@ -54,7 +54,7 @@ pub(crate) fn propose(ctx: &DecisionContext<'_>, scratch: &mut SearchScratch) ->
                 Behavior::Advancing,
                 goal,
                 None,
-                me.patrol_index,
+                me.nav.patrol_index,
                 None,
             ));
         }
@@ -63,7 +63,7 @@ pub(crate) fn propose(ctx: &DecisionContext<'_>, scratch: &mut SearchScratch) ->
     let radius = TUNING.reposition_radius;
     let map = ctx.terrain.map;
     let width = ctx.terrain.cache.width;
-    let (x0, x1, y0, y1) = grid_window(map, me.position, radius);
+    let (x0, x1, y0, y1) = grid_window(map, me.nav.position, radius);
 
     let mut candidates = Vec::new();
     for y in y0..=y1 {
@@ -76,7 +76,7 @@ pub(crate) fn propose(ctx: &DecisionContext<'_>, scratch: &mut SearchScratch) ->
                 x: x as f64 + 0.5,
                 y: y as f64 + 0.5,
             };
-            if me.position.distance(p) > radius
+            if me.nav.position.distance(p) > radius
                 || p.distance(enemy) > engagement_distance
                 || map::exposure_t(ctx.terrain, p, enemy, ctx.input.visible_enemy_revealed) <= 0.0
             {
@@ -91,13 +91,17 @@ pub(crate) fn propose(ctx: &DecisionContext<'_>, scratch: &mut SearchScratch) ->
     }
 
     if candidates.is_empty() {
-        return Some(Decision::hold(Behavior::Engaging, None, me.patrol_index));
+        return Some(Decision::hold(
+            Behavior::Engaging,
+            None,
+            me.nav.patrol_index,
+        ));
     }
 
     let targets: Vec<_> = candidates.iter().map(|(p, _)| *p).collect();
     scratch.run_dijkstra(
         ctx.terrain,
-        me.position,
+        me.nav.position,
         ctx.threats,
         ctx.preference,
         ctx.revealed,
@@ -126,10 +130,14 @@ pub(crate) fn propose(ctx: &DecisionContext<'_>, scratch: &mut SearchScratch) ->
             Behavior::Advancing,
             chosen.point,
             None,
-            me.patrol_index,
+            me.nav.patrol_index,
             Some(route),
         ));
     }
 
-    Some(Decision::hold(Behavior::Engaging, None, me.patrol_index))
+    Some(Decision::hold(
+        Behavior::Engaging,
+        None,
+        me.nav.patrol_index,
+    ))
 }

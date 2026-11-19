@@ -58,6 +58,7 @@ fn spawn_sides(per_side: u32, map: &ArenaMap, route_pref: RoutePreference) -> Ve
                     definition_id: "infantry".into(),
                     position: Point { x, y },
                     doctrine: doctrine.clone(),
+                    loadout: None,
                 });
                 id += 1;
                 placed += 1;
@@ -94,19 +95,51 @@ fn large_map(obstacles_count: usize) -> ArenaMap {
     m
 }
 
+fn spawn_grid(per_side: u32, map: &ArenaMap, route_pref: RoutePreference) -> Vec<UnitPlacement> {
+    let mut out = Vec::with_capacity((per_side * 2) as usize);
+    let mut id = 1;
+    let mut doctrine = catalog().default_doctrine;
+    doctrine.position_preference = PositionPreference::Cover;
+    doctrine.route_preference = route_pref;
+    let rows = (map.height - 2).max(1);
+    for faction in 0..2u32 {
+        for idx in 0..per_side {
+            let col = idx / rows;
+            let row = idx % rows;
+            let x = if faction == 0 {
+                2.5 + col as f64
+            } else {
+                map.width as f64 - 2.5 - col as f64
+            };
+            let y = 1.5 + row as f64;
+            out.push(UnitPlacement {
+                id,
+                faction,
+                definition_id: "infantry".into(),
+                position: Point { x, y },
+                doctrine: doctrine.clone(),
+                loadout: None,
+            });
+            id += 1;
+        }
+    }
+    out
+}
+
 fn run_one(
     name: &str,
     map: ArenaMap,
-    route_pref: RoutePreference,
+    units: Vec<UnitPlacement>,
     max_steps: usize,
     max_secs: u64,
 ) -> BenchResult {
     let scenario = Scenario {
-        units: spawn_sides(8, &map, route_pref),
+        units,
         map,
         seed: 1,
-        factions: vec![0, 1],
-        time_limit: 180.0,
+        factions: default_factions(),
+        loadouts: vec![],
+        time_limit: Some(180.0),
     };
     let mut battle = Battle::new(scenario).expect("valid benchmark scenario");
     let mut step_ms = Vec::with_capacity(max_steps.min(3600));
@@ -191,10 +224,11 @@ pub fn run_benchmarks(config: &BenchConfig) -> Vec<BenchResult> {
     for preset in catalog().maps {
         for pref in [RoutePreference::Fastest, RoutePreference::Protected] {
             let label = format!("{}-{pref:?}", preset.id).to_lowercase();
+            let units = spawn_sides(8, &preset.map, pref);
             results.push(run_one(
                 &label,
                 preset.map.clone(),
-                pref,
+                units,
                 max_steps,
                 config.max_secs_per_scenario,
             ));
@@ -204,10 +238,11 @@ pub fn run_benchmarks(config: &BenchConfig) -> Vec<BenchResult> {
     let open128 = large_map(0);
     for pref in [RoutePreference::Fastest, RoutePreference::Protected] {
         let label = format!("128x128-open-{pref:?}").to_lowercase();
+        let units = spawn_sides(8, &open128, pref);
         results.push(run_one(
             &label,
             open128.clone(),
-            pref,
+            units,
             if config.quick { 80 } else { max_steps },
             config.max_secs_per_scenario,
         ));
@@ -217,11 +252,27 @@ pub fn run_benchmarks(config: &BenchConfig) -> Vec<BenchResult> {
         let dense128 = large_map(1500);
         for pref in [RoutePreference::Fastest, RoutePreference::Protected] {
             let label = format!("128x128-obs1500-{pref:?}").to_lowercase();
+            let units = spawn_sides(8, &dense128, pref);
             results.push(run_one(
                 &label,
                 dense128.clone(),
-                pref,
+                units,
                 max_steps,
+                config.max_secs_per_scenario,
+            ));
+        }
+    }
+
+    if config.show_sweep_plan {
+        for total in [100u32, 1000, 5000] {
+            let per_side = total / 2;
+            let units = spawn_grid(per_side, &open128, RoutePreference::Fastest);
+            let label = format!("sweep-{total}-open128");
+            results.push(run_one(
+                &label,
+                open128.clone(),
+                units,
+                if config.quick { 10 } else { 40 },
                 config.max_secs_per_scenario,
             ));
         }
@@ -262,10 +313,9 @@ pub fn format_bench_table(results: &[BenchResult], show_sweep_note: bool) -> Str
         ));
     }
     if show_sweep_note {
-        out.push_str(&format!(
-            "\nNote: 100 / 1,000 / 5,000 entity sweeps (SCALE.md) are currently gated by core validation `max_per_faction = {}` and will be enabled in Phase 3.\n",
-            catalog().max_per_faction
-        ));
+        out.push_str(
+            "\nNote: 100 / 1,000 / 5,000 entity sweeps run against core engine validation (decoupled from Skirmish's 8-per-faction limit).\n",
+        );
     }
     out
 }

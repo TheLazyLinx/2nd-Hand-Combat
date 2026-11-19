@@ -1,8 +1,8 @@
 ﻿<script lang="ts">
-  import type { Catalog, Scenario, Snapshot } from '../lib/types';
-  export let faction: number;
+  import { factionColorHex, unitDefinition } from '../lib/factions';
+  import type { Catalog, FactionDefinition, Scenario, Snapshot } from '../lib/types';
+  export let faction: FactionDefinition;
   export let side: number;
-  export let name: string;
   export let scenario: Scenario | null;
   export let snapshot: Snapshot | null;
   export let catalog: Catalog | null;
@@ -11,21 +11,23 @@
   export let busy: boolean;
   export let onSelect: (id: number) => void;
   export let onAdd: () => void;
+
+  $: roster = scenario?.units.filter((u) => u.faction === faction.id) ?? [];
 </script>
 
-<section class="faction" data-testid={`faction-${faction}`}>
+<section class="faction" data-testid={`faction-${faction.id}`}>
   <div class="faction-title">
     <div>
-      <i class:north={side === 0} class:south={side === 1} class="dot"></i><strong>
-        {name}
-      </strong><small>FACTION 0{side + 1}</small>
+      <i class="dot" style={`background:${factionColorHex(faction.color)}`}></i><strong>
+        {faction.name}
+      </strong><small>FACTION {String(side + 1).padStart(2, '0')}</small>
     </div>
     <span>
-      {scenario?.units.filter((u) => u.faction === faction).length ?? 0} / {catalog?.maxPerFaction ??
-        8}
+      {roster.length} / {catalog?.maxPerFaction ?? 8}
     </span>
   </div>
-  {#each scenario?.units.filter((u) => u.faction === faction) ?? [] as unit (unit.id)}
+  {#each roster as unit (unit.id)}
+    {@const unitDef = catalog ? unitDefinition(catalog, unit.definitionId) : null}
     <button
       class:active={selected === unit.id}
       class="roster-unit"
@@ -34,22 +36,20 @@
     >
       <span class="unit-icon">&#10022;</span>
       <span>
-        <strong>Infantry #{unit.id}</strong><small>
+        <strong>{unitDef?.name ?? unit.definitionId} #{unit.id}</strong><small>
           {snapshot?.units.find((u) => u.id === unit.id)?.behavior ?? 'Ready for deployment'}
         </small>
       </span>
       <span class="unit-hp">
-        {snapshot?.units.find((u) => u.id === unit.id)?.hp ?? catalog?.unit.maxHp} HP
+        {snapshot?.units.find((u) => u.id === unit.id)?.hp ?? unitDef?.maxHp} HP
       </span>
     </button>
   {/each}
   {#if editable}
     <button
       class="add"
-      data-testid={`add-soldier-${faction}`}
-      disabled={busy ||
-        (scenario?.units.filter((u) => u.faction === faction).length ?? 0) >=
-          (catalog?.maxPerFaction ?? 8)}
+      data-testid={`add-soldier-${faction.id}`}
+      disabled={busy || roster.length >= (catalog?.maxPerFaction ?? 8)}
       onclick={onAdd}
     >
       + <span>Add soldier</span>

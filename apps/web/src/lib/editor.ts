@@ -41,7 +41,7 @@ export function createSession(
 export function blankDocument(catalog: Catalog, width = 32, height = 20): ScenarioDocument {
   return {
     format: '2nd-hand-combat-scenario',
-    schemaVersion: 2,
+    schemaVersion: 3,
     name: 'Untitled scenario',
     description: '',
     scenario: {
@@ -54,8 +54,9 @@ export function blankDocument(catalog: Catalog, width = 32, height = 20): Scenar
         patrol: [],
       },
       seed: catalog.defaultSeed,
-      factions: [0, 1],
+      factions: copy(catalog.defaultFactions),
       units: [],
+      loadouts: [],
       timeLimit: catalog.defaultTimeLimit,
     },
   };

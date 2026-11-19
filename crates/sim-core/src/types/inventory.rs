@@ -8,8 +8,14 @@ pub struct UnitDefinition {
     pub name: String,
     pub max_hp: f64,
     pub speed: f64,
+    pub eye_height: f64,
+    pub muzzle_height: f64,
+    pub target_heights: Vec<f64>,
+    pub spotting_range: f64,
+    pub moving_fire_multiplier: f64,
     pub max_weight_grams: u32,
     pub max_stowed_volume_ml: u32,
+    pub default_loadout: Vec<LoadoutEntry>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -22,6 +28,7 @@ pub struct WeaponDefinition {
     pub hit_chance: f64,
     pub ammo_item_id: String,
     pub cooldown: f64,
+    pub moving_fire_multiplier: f64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -80,12 +87,32 @@ pub struct Sustainment {
     pub hydration_shortage: bool,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS), ts(rename_all = "camelCase"))]
 #[serde(rename_all = "camelCase")]
 pub struct LoadoutEntry {
     pub item_id: String,
     pub quantity: u32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS), ts(rename_all = "camelCase"))]
+#[serde(rename_all = "camelCase")]
+pub struct NamedLoadout {
+    pub name: String,
+    pub entries: Vec<LoadoutEntry>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ts-export",
+    derive(ts_rs::TS),
+    ts(tag = "kind", rename_all = "camelCase")
+)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum UnitLoadout {
+    Named { name: String },
+    Inline { entries: Vec<LoadoutEntry> },
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]

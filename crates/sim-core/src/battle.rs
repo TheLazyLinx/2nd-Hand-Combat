@@ -1,3 +1,6 @@
+//! Top-level simulation state machine: orchestrates fixed-step sustainment, perception,
+//! staggered tactical decisions, movement, combat, and victory evaluation.
+
 use crate::{
     decisions,
     definitions::TUNING,
@@ -135,11 +138,14 @@ impl Battle {
                 .collect::<Vec<_>>()
                 .join(" "));
         }
-        let mut units: Vec<_> = scenario.units.iter().cloned().map(Unit::new).collect();
+        let mut units = Vec::with_capacity(scenario.units.len());
+        for placement in &scenario.units {
+            units.push(Unit::from_placement(placement.clone(), &scenario.loadouts)?);
+        }
         units.sort_by_key(|u| u.placement.id);
         for u in &mut units {
             if !scenario.map.patrol.is_empty() {
-                u.patrol_index = (u.placement.id as usize) % scenario.map.patrol.len();
+                u.nav.patrol_index = (u.placement.id as usize) % scenario.map.patrol.len();
             }
         }
         let terrain = TerrainCache::new(&scenario.map);
@@ -202,61 +208,71 @@ impl Battle {
         }
         let mut contacts = Vec::new();
         for (i, seen) in self.pre_observations.iter().enumerate() {
-            if self.units[i].hp <= 0.0 {
+            if self.units[i].vitals.hp <= 0.0 {
                 continue;
             }
             if !seen.is_empty() {
-                self.units[i].last_contact = self.tick;
+                self.units[i].perception.last_contact = self.tick;
             }
-            let previous_target = self.units[i].target;
+            let previous_target = self.units[i].perception.target;
             contacts.clear();
             contacts.extend(seen.iter().map(|&j| {
                 let u = &self.units[j];
-                (u.placement.id, u.position)
+                (u.placement.id, u.nav.position)
             }));
             let first_seen = seen
                 .first()
-                .map(|&j| (self.units[j].placement.id, self.units[j].position));
+                .map(|&j| (self.units[j].placement.id, self.units[j].nav.position));
             let me = &mut self.units[i];
-            me.threat_memories
+            me.perception
+                .threat_memories
                 .retain(|memory| self.tick - memory.tick <= TUNING.memory_expiry_ticks);
             for &(id, position) in &contacts {
-                if let Some(memory) = me.threat_memories.iter_mut().find(|memory| memory.id == id) {
+                if let Some(memory) = me
+                    .perception
+                    .threat_memories
+                    .iter_mut()
+                    .find(|memory| memory.id == id)
+                {
                     memory.position = position;
                     memory.tick = self.tick;
                 } else {
-                    me.threat_memories.push(ThreatMemory {
+                    me.perception.threat_memories.push(ThreatMemory {
                         id,
                         position,
                         tick: self.tick,
                     });
                 }
             }
-            me.threat_memories.sort_by_key(|memory| memory.id);
-            me.known_threats.clear();
-            me.known_threats
-                .extend(me.threat_memories.iter().map(|memory| memory.position));
+            me.perception
+                .threat_memories
+                .sort_by_key(|memory| memory.id);
+            me.perception.known_threats.clear();
+            me.perception
+                .known_threats
+                .extend(me.perception.threat_memories.iter().map(|m| m.position));
             if let Some((id, position)) = first_seen {
-                me.target = Some(id);
+                me.perception.target = Some(id);
                 if previous_target != Some(id) {
                     me.needs_decision = true;
                 }
-                me.memory = Some(Memory {
+                me.perception.memory = Some(Memory {
                     position,
                     tick: self.tick,
                     investigated: false,
                 });
             } else {
-                me.target = None;
+                me.perception.target = None;
                 if previous_target.is_some() {
                     me.needs_decision = true;
                 }
                 if me
+                    .perception
                     .memory
                     .as_ref()
                     .is_some_and(|m| self.tick - m.tick > TUNING.memory_expiry_ticks)
                 {
-                    me.memory = None;
+                    me.perception.memory = None;
                 }
             }
         }
@@ -265,29 +281,30 @@ impl Battle {
         for i in 0..self.units.len() {
             let cadence_due = (self.tick + self.units[i].placement.id)
                 .is_multiple_of(TUNING.decision_interval_ticks);
-            if self.units[i].hp <= 0.0 || (!cadence_due && !self.units[i].needs_decision) {
+            if self.units[i].vitals.hp <= 0.0 || (!cadence_due && !self.units[i].needs_decision) {
                 decisions.push(None);
                 continue;
             }
-            let faction_index = self
-                .scenario
-                .factions
-                .iter()
-                .position(|f| *f == self.units[i].placement.faction)
-                .unwrap_or(0);
             let unit = &self.units[i];
+            let patrol_direction = self
+                .scenario
+                .faction(unit.placement.faction)
+                .map(|f| f.patrol_direction)
+                .unwrap_or_default();
             let visible_enemy = self.pre_observations[i]
                 .first()
-                .map(|j| self.units[*j].position);
+                .map(|j| self.units[*j].nav.position);
             let allies = self
                 .units
                 .iter()
                 .filter(|other| {
-                    other.hp > 0.0
-                        && other.placement.faction == unit.placement.faction
+                    other.vitals.hp > 0.0
+                        && !self
+                            .scenario
+                            .is_hostile(other.placement.faction, unit.placement.faction)
                         && other.placement.id != unit.placement.id
                 })
-                .map(|other| other.position)
+                .map(|other| other.nav.position)
                 .collect();
             decisions.push(Some(decisions::decide_with(
                 &decisions::DecisionInput {
@@ -295,36 +312,36 @@ impl Battle {
                     visible_enemy,
                     visible_enemy_revealed: self.pre_observations[i]
                         .first()
-                        .is_some_and(|j| self.tick < self.units[*j].revealed_until),
+                        .is_some_and(|j| self.tick < self.units[*j].combat.revealed_until),
                     tick: self.tick,
                     allies,
                 },
                 terrain,
                 &mut self.scratch,
-                faction_index,
+                patrol_direction,
             )));
         }
         for (u, decision) in self.units.iter_mut().zip(decisions) {
             if let Some(decision) = decision {
                 let fallback = decision.fallback_goal;
-                let old_fallback = u.fallback_goal;
-                u.behavior = decision.behavior;
-                u.goal = decision.goal;
-                u.fallback_goal = fallback;
-                u.patrol_index = decision.patrol_index;
+                let old_fallback = u.nav.fallback_goal;
+                u.combat.behavior = decision.behavior;
+                u.nav.goal = decision.goal;
+                u.nav.fallback_goal = fallback;
+                u.nav.patrol_index = decision.patrol_index;
                 if let Some(route) = decision.route {
-                    u.route = route;
+                    u.nav.route = route;
                 }
                 if decision.mark_investigated {
-                    if let Some(memory) = &mut u.memory {
+                    if let Some(memory) = &mut u.perception.memory {
                         memory.investigated = true;
                     }
                 }
                 u.needs_decision = false;
-                u.fallback_threat = if fallback.is_some() && fallback == old_fallback {
-                    u.fallback_threat
+                u.nav.fallback_threat = if fallback.is_some() && fallback == old_fallback {
+                    u.nav.fallback_threat
                 } else if fallback.is_some() {
-                    u.memory.as_ref().map(|m| m.position)
+                    u.perception.memory.as_ref().map(|m| m.position)
                 } else {
                     None
                 };
@@ -363,37 +380,40 @@ impl Battle {
                 .map(|u| UnitSnapshot {
                     id: u.placement.id,
                     faction: u.placement.faction,
-                    position: u.position,
-                    hp: u.hp,
-                    behavior: u.behavior.clone(),
-                    target_id: u.target,
-                    shots_fired: u.shots,
+                    position: u.nav.position,
+                    hp: u.vitals.hp,
+                    behavior: u.combat.behavior.clone(),
+                    target_id: u.perception.target,
+                    shots_fired: u.combat.shots,
                     inventory: u.inventory.snapshot(),
                     sustainment: Sustainment {
-                        nutrition: u.nutrition,
-                        hydration: u.hydration,
+                        nutrition: u.sustainment.nutrition,
+                        hydration: u.sustainment.hydration,
                         needs_factor: u.needs_factor(),
-                        nutrition_shortage: crate::sustainment::shortage(u.nutrition),
-                        hydration_shortage: crate::sustainment::shortage(u.hydration),
+                        nutrition_shortage: crate::sustainment::shortage(u.sustainment.nutrition),
+                        hydration_shortage: crate::sustainment::shortage(u.sustainment.hydration),
                     },
                     mobility_factor: u.inventory.load_factor() * u.needs_factor(),
                     terrain: TerrainStatus {
-                        surface: crate::map::surface(&self.scenario.map, u.position),
-                        elevation: self.terrain.ground_height(&self.scenario.map, u.position),
-                        movement_multiplier: u.movement_multiplier,
-                        revealed: self.tick < u.revealed_until,
+                        surface: crate::map::surface(&self.scenario.map, u.nav.position),
+                        elevation: self
+                            .terrain
+                            .ground_height(&self.scenario.map, u.nav.position),
+                        movement_multiplier: u.nav.movement_multiplier,
+                        revealed: self.tick < u.combat.revealed_until,
                         protection: u
+                            .perception
                             .target
                             .and_then(|id| {
                                 self.units
                                     .iter()
-                                    .find(|other| other.placement.id == id && other.hp > 0.0)
+                                    .find(|other| other.placement.id == id && other.vitals.hp > 0.0)
                             })
                             .map(|other| {
                                 1.0 - crate::map::shot_fraction_t(
                                     terrain,
-                                    other.position,
-                                    u.position,
+                                    other.nav.position,
+                                    u.nav.position,
                                 )
                             }),
                     },
@@ -407,6 +427,28 @@ impl Battle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::definitions::default_factions;
+
+    fn placement(id: u32, faction: u32, position: Point) -> UnitPlacement {
+        UnitPlacement {
+            id,
+            faction,
+            definition_id: "infantry".into(),
+            position,
+            doctrine: Doctrine {
+                engagement_distance: 8.0,
+                fallback_hp: 0.0,
+                position_preference: PositionPreference::Balanced,
+                route_preference: RoutePreference::Fastest,
+                grenades: GrenadeDoctrine::default(),
+                medical: MedicalDoctrine::default(),
+                out_of_ammo_behavior: OutOfAmmoBehavior::default(),
+                fire_while_moving: false,
+            },
+            loadout: None,
+        }
+    }
+
     #[test]
     fn last_seen_is_individual_and_expires_without_hidden_updates() {
         let mut map = ArenaMap::flat(32, 20);
@@ -417,133 +459,111 @@ mod tests {
             height: 1,
             height_metres: 2.4,
         });
-        let unit = |id, faction, position| UnitPlacement {
-            id,
-            faction,
-            definition_id: "infantry".into(),
-            position,
-            doctrine: Doctrine {
-                engagement_distance: 8.0,
-                fallback_hp: 0.0,
-                position_preference: PositionPreference::Balanced,
-                route_preference: RoutePreference::Fastest,
-                grenades: GrenadeDoctrine::default(),
-                medical: MedicalDoctrine::default(),
-                out_of_ammo_behavior: OutOfAmmoBehavior::default(),
-            },
-        };
         let scenario = Scenario {
             map,
             seed: 1,
-            factions: vec![0, 1],
+            factions: default_factions(),
+            loadouts: vec![],
             units: vec![
-                unit(1, 0, Point { x: 3.5, y: 5.5 }),
-                unit(2, 1, Point { x: 4.5, y: 5.5 }),
-                unit(3, 1, Point { x: 30.5, y: 18.5 }),
+                placement(1, 0, Point { x: 3.5, y: 5.5 }),
+                placement(2, 1, Point { x: 4.5, y: 5.5 }),
+                placement(3, 1, Point { x: 30.5, y: 18.5 }),
             ],
-            time_limit: 180.0,
+            time_limit: Some(180.0),
         };
         let mut battle = Battle::new(scenario).unwrap();
         battle.step();
-        battle.units[1].position = Point { x: 6.5, y: 5.5 };
-        battle.units[1].hp = 0.0;
+        battle.units[1].nav.position = Point { x: 6.5, y: 5.5 };
+        battle.units[1].vitals.hp = 0.0;
         battle.step();
         assert_eq!(battle.snapshot().units[0].target_id, None);
         assert_eq!(
-            battle.units[0].memory.as_ref().unwrap().position,
+            battle.units[0].perception.memory.as_ref().unwrap().position,
             Point { x: 4.5, y: 5.5 }
         );
         for _ in 0..201 {
             battle.step();
         }
-        assert!(battle.units[0].memory.is_none());
+        assert!(battle.units[0].perception.memory.is_none());
         assert_eq!(battle.snapshot().units[0].behavior, Behavior::Searching);
     }
+
     fn test_battle() -> Battle {
         let mut map = ArenaMap::flat(32, 20);
         map.patrol = vec![Point { x: 12.5, y: 10.5 }];
-        let unit = |id, faction, position| UnitPlacement {
-            id,
-            faction,
-            definition_id: "infantry".into(),
-            position,
-            doctrine: Doctrine {
-                engagement_distance: 8.0,
-                fallback_hp: 0.0,
-                position_preference: PositionPreference::Balanced,
-                route_preference: RoutePreference::Fastest,
-                grenades: GrenadeDoctrine::default(),
-                medical: MedicalDoctrine::default(),
-                out_of_ammo_behavior: OutOfAmmoBehavior::default(),
-            },
-        };
         Battle::new(Scenario {
             map,
             seed: 1,
-            factions: vec![0, 1],
+            factions: default_factions(),
+            loadouts: vec![],
             units: vec![
-                unit(1, 0, Point { x: 2.5, y: 10.5 }),
-                unit(2, 1, Point { x: 28.5, y: 10.5 }),
+                placement(1, 0, Point { x: 2.5, y: 10.5 }),
+                placement(2, 1, Point { x: 28.5, y: 10.5 }),
             ],
-            time_limit: 180.0,
+            time_limit: Some(180.0),
         })
         .unwrap()
     }
+
     #[test]
     fn new_sighting_interrupts_patrol_on_the_next_tick() {
         let mut battle = test_battle();
         battle.step();
         assert_eq!(battle.snapshot().units[0].behavior, Behavior::Searching);
-        battle.units[1].position = Point { x: 8.5, y: 10.5 };
+        battle.units[1].nav.position = Point { x: 8.5, y: 10.5 };
         battle.step();
         assert_eq!(battle.snapshot().units[0].behavior, Behavior::Engaging);
         assert_eq!(battle.snapshot().units[0].shots_fired, 1);
     }
+
     #[test]
     fn threshold_crossing_interrupts_engagement() {
         let mut battle = test_battle();
-        battle.units[1].position = Point { x: 8.5, y: 10.5 };
-        battle.units[0].hp = 40.0;
+        battle.units[1].nav.position = Point { x: 8.5, y: 10.5 };
+        battle.units[0].vitals.hp = 40.0;
         battle.units[0].placement.doctrine.fallback_hp = 30.0;
         battle.step();
         assert_eq!(battle.snapshot().units[0].hp, 20.0);
         battle.step();
         assert_eq!(battle.snapshot().units[0].behavior, Behavior::FallingBack);
     }
+
     #[test]
     fn fallback_reconsiders_when_threat_moves_across_unit() {
         let mut battle = test_battle();
-        battle.units[0].position = Point { x: 10.5, y: 10.5 };
-        battle.units[1].position = Point { x: 14.5, y: 10.5 };
+        battle.units[0].nav.position = Point { x: 10.5, y: 10.5 };
+        battle.units[1].nav.position = Point { x: 14.5, y: 10.5 };
         battle.units[0].placement.doctrine.fallback_hp = 100.0;
         battle.step();
-        assert!(battle.units[0].goal.unwrap().x < 10.5);
-        battle.units[1].position = Point { x: 5.5, y: 10.5 };
+        assert!(battle.units[0].nav.goal.unwrap().x < 10.5);
+        battle.units[1].nav.position = Point { x: 5.5, y: 10.5 };
         for _ in 0..10 {
             battle.step();
         }
-        assert!(battle.units[0].goal.unwrap().x > battle.units[0].position.x);
+        assert!(battle.units[0].nav.goal.unwrap().x > battle.units[0].nav.position.x);
     }
+
     #[test]
     fn simultaneous_damage_takes_priority_over_final_tick_timeout() {
         let mut battle = test_battle();
-        battle.scenario.time_limit = 1.0;
+        battle.scenario.time_limit = Some(1.0);
         battle.tick = 19;
-        battle.units[0].position = Point { x: 3.5, y: 10.5 };
-        battle.units[1].position = Point { x: 7.5, y: 10.5 };
-        battle.units[0].hp = 20.0;
-        battle.units[1].hp = 20.0;
+        battle.units[0].nav.position = Point { x: 3.5, y: 10.5 };
+        battle.units[1].nav.position = Point { x: 7.5, y: 10.5 };
+        battle.units[0].vitals.hp = 20.0;
+        battle.units[1].vitals.hp = 20.0;
         battle.step();
         let result = battle.snapshot().result.unwrap();
         assert_eq!(result.reason, "simultaneous_elimination");
         assert_eq!(result.winner, None);
         assert_eq!(result.factions.iter().map(|f| f.casualties).sum::<u32>(), 2);
     }
+
     #[test]
     fn all_seen_threats_retain_individual_last_positions_until_expiry() {
         let mut battle = test_battle();
-        battle.units[0].position = Point { x: 2.5, y: 5.5 };
-        battle.units[1].position = Point { x: 6.5, y: 5.5 };
+        battle.units[0].nav.position = Point { x: 2.5, y: 5.5 };
+        battle.units[1].nav.position = Point { x: 6.5, y: 5.5 };
         let mut third = battle.units[1].placement.clone();
         third.id = 3;
         third.position = Point { x: 7.5, y: 7.5 };
@@ -553,8 +573,9 @@ mod tests {
             u.placement.doctrine.fallback_hp = 100.0;
         }
         battle.step();
-        assert_eq!(battle.units[0].threat_memories.len(), 2);
+        assert_eq!(battle.units[0].perception.threat_memories.len(), 2);
         let last_seen = battle.units[0]
+            .perception
             .threat_memories
             .iter()
             .find(|m| m.id == 2)
@@ -567,14 +588,15 @@ mod tests {
             height: 1,
             height_metres: 2.4,
         });
-        battle.units[1].position = Point { x: 9.5, y: 5.5 };
-        battle.units[0].position = Point { x: 2.5, y: 5.5 };
-        battle.units[2].position = Point { x: 7.5, y: 7.5 };
+        battle.units[1].nav.position = Point { x: 9.5, y: 5.5 };
+        battle.units[0].nav.position = Point { x: 2.5, y: 5.5 };
+        battle.units[2].nav.position = Point { x: 7.5, y: 7.5 };
         battle.step();
-        assert_eq!(battle.units[0].target, Some(3));
-        assert_eq!(battle.units[0].known_threats.len(), 2);
+        assert_eq!(battle.units[0].perception.target, Some(3));
+        assert_eq!(battle.units[0].perception.known_threats.len(), 2);
         assert_eq!(
             battle.units[0]
+                .perception
                 .threat_memories
                 .iter()
                 .find(|m| m.id == 2)
@@ -584,10 +606,15 @@ mod tests {
         );
         // Advancing time while the enemy remains hidden must expire that contact.
         battle.tick = 202;
-        battle.units[0].position = Point { x: 2.5, y: 5.5 };
+        battle.units[0].nav.position = Point { x: 2.5, y: 5.5 };
         battle.step();
-        assert!(battle.units[0].threat_memories.iter().all(|m| m.id != 2));
+        assert!(battle.units[0]
+            .perception
+            .threat_memories
+            .iter()
+            .all(|m| m.id != 2));
     }
+
     #[test]
     fn long_battle_consumes_supplies_repeatably_then_terminal_state_freezes() {
         let mut battle = test_battle();
@@ -597,7 +624,7 @@ mod tests {
             .iter()
             .all(|unit| unit.terrain.movement_multiplier == 0.0));
         battle.scenario.map.patrol.clear();
-        battle.scenario.time_limit = 200.0;
+        battle.scenario.time_limit = Some(200.0);
         let mut replay = Battle::new(battle.scenario.clone()).unwrap();
         for _ in 0..4000 {
             battle.step();
@@ -632,6 +659,7 @@ mod tests {
         }
         assert_eq!(battle.snapshot(), terminal);
     }
+
     #[test]
     fn unreachable_memory_returns_unit_to_patrol_in_battle() {
         let mut battle = test_battle();
@@ -642,13 +670,20 @@ mod tests {
             height: 20,
             height_metres: 2.5,
         });
-        battle.units[0].memory = Some(Memory {
+        battle.units[0].perception.memory = Some(Memory {
             position: Point { x: 20.5, y: 10.5 },
             tick: 0,
             investigated: false,
         });
         battle.step();
-        assert!(battle.units[0].memory.as_ref().unwrap().investigated);
+        assert!(
+            battle.units[0]
+                .perception
+                .memory
+                .as_ref()
+                .unwrap()
+                .investigated
+        );
         assert_eq!(battle.snapshot().units[0].behavior, Behavior::Searching);
         assert!(battle.snapshot().units[0].position.x > 2.5);
     }

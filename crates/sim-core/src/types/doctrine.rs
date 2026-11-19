@@ -14,6 +14,8 @@ pub struct Doctrine {
     pub medical: MedicalDoctrine,
     #[serde(default)]
     pub out_of_ammo_behavior: OutOfAmmoBehavior,
+    #[serde(default)]
+    pub fire_while_moving: bool,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -131,6 +133,7 @@ mod doctrine_serde_tests {
         assert_eq!(d.grenades.policy, GrenadePolicy::Clusters);
         assert_eq!(d.medical.policy, MedicalPolicy::OutOfContact);
         assert_eq!(d.out_of_ammo_behavior, OutOfAmmoBehavior::Withdraw);
+        assert!(!d.fire_while_moving);
         let partial = r#"{"engagementDistance":8,"fallbackHp":30,"positionPreference":"balanced","routePreference":"fastest","medical":{"policy":"never"}}"#;
         assert!(serde_json::from_str::<Doctrine>(partial).is_err());
     }

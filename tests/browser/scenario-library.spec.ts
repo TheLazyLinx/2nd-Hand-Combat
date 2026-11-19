@@ -38,7 +38,7 @@ function fixture(name = 'Library round trip') {
     },
   };
 }
-async function upgraded(page: Page, document: ReturnType<typeof fixture>) {
+async function upgradedV2(page: Page, document: ReturnType<typeof fixture>) {
   return page.evaluate((document) => {
     const ready = window.observedWorkers
       .at(-1)!
@@ -47,7 +47,7 @@ async function upgraded(page: Page, document: ReturnType<typeof fixture>) {
     const defaults = ready.catalog.defaultDoctrine;
     return {
       ...document,
-      schemaVersion: 2,
+      schemaVersion: 2 as const,
       scenario: {
         ...document.scenario,
         units: document.scenario.units.map((unit) => ({
@@ -57,6 +57,38 @@ async function upgraded(page: Page, document: ReturnType<typeof fixture>) {
             grenades: structuredClone(defaults.grenades),
             medical: structuredClone(defaults.medical),
             outOfAmmoBehavior: defaults.outOfAmmoBehavior,
+          },
+        })),
+      },
+    };
+  }, document);
+}
+async function upgraded(page: Page, document: ReturnType<typeof fixture>) {
+  return page.evaluate((document) => {
+    const ready = window.observedWorkers
+      .at(-1)!
+      .received.find((message) => message.type === 'ready');
+    if (!ready || ready.type !== 'ready') throw new Error('Catalog unavailable');
+    const defaults = ready.catalog.defaultDoctrine;
+    const defaultFactions = ready.catalog.defaultFactions;
+    return {
+      ...document,
+      schemaVersion: 3 as const,
+      scenario: {
+        ...document.scenario,
+        factions: document.scenario.factions.map((id, index) => ({
+          ...structuredClone(defaultFactions[index]),
+          id,
+        })),
+        loadouts: [],
+        units: document.scenario.units.map((unit) => ({
+          ...unit,
+          doctrine: {
+            ...unit.doctrine,
+            grenades: structuredClone(defaults.grenades),
+            medical: structuredClone(defaults.medical),
+            outOfAmmoBehavior: defaults.outOfAmmoBehavior,
+            fireWhileMoving: defaults.fireWhileMoving,
           },
         })),
       },
@@ -417,7 +449,7 @@ test('a sparse pointer stroke paints continuously and undo removes the entire ge
   ).toBe(true);
 });
 
-test('inventory doctrines round trip through v2 export and the scenario library', async ({
+test('inventory doctrines round trip through v3 export and the scenario library', async ({
   page,
 }, info) => {
   await openMaker(page);
@@ -445,12 +477,13 @@ test('inventory doctrines round trip through v2 export and the scenario library'
   await page.getByTestId('medical-cooldown').fill('12');
   await expect(page.getByText('Ready to test', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Export', exact: true })).toBeEnabled();
-  const document = await exported(page, info.outputPath('inventory-doctrine-v2.json'));
-  expect(document.schemaVersion).toBe(2);
+  const document = await exported(page, info.outputPath('inventory-doctrine-v3.json'));
+  expect(document.schemaVersion).toBe(3);
   expect(document.scenario.units[0].doctrine).toMatchObject({
     grenades: { policy: 'clusters', maxDistance: 5.5, minEnemies: 3, safetyMargin: 0.75 },
     medical: { policy: 'outOfContact', hpThreshold: 65, safeSeconds: 7, cooldownSeconds: 12 },
     outOfAmmoBehavior: 'continueDoctrine',
+    fireWhileMoving: false,
   });
   expect(document.scenario.units[0]).not.toHaveProperty('inventory');
   await page.getByRole('button', { name: 'Save', exact: true }).first().click();
@@ -548,7 +581,7 @@ test(
       .click();
     await expect(page.getByLabel('Name', { exact: true })).toHaveValue(legacy.name);
     await expect(page.getByText('Unsaved changes', { exact: true })).toHaveCount(0);
-    expect(await exported(page, info.outputPath('legacy-upgraded-v2.json'))).toEqual(
+    expect(await exported(page, info.outputPath('legacy-upgraded-v3.json'))).toEqual(
       await upgraded(page, legacy),
     );
     const stored = await page.evaluate(
@@ -597,9 +630,103 @@ test(
             }),
         ),
       )
-      .toBe(2);
+      .toBe(3);
   },
 );
+
+test('opening and importing v2 scenarios upgrades in memory to v3 without mutating stored records', async ({
+  page,
+}, info) => {
+  await openMaker(page);
+  const v1 = fixture('Legacy v2 scenario');
+  const v2 = await upgradedV2(page, v1);
+  v2.scenario.units[0].doctrine.grenades = {
+    policy: 'anySafeTarget',
+    maxDistance: 5,
+    minEnemies: 2,
+    safetyMargin: 0.5,
+  };
+  await page.evaluate(
+    (document) =>
+      new Promise<void>((resolve, reject) => {
+        const request = indexedDB.open('2nd-hand-combat', 1);
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const db = request.result,
+            tx = db.transaction('scenarios', 'readwrite');
+          tx.objectStore('scenarios').put({
+            id: 'legacy-v2-record',
+            updatedAt: '2026-02-01T00:00:00.000Z',
+            document,
+          });
+          tx.oncomplete = () => {
+            db.close();
+            resolve();
+          };
+          tx.onerror = () => {
+            db.close();
+            reject(tx.error);
+          };
+        };
+      }),
+    v2,
+  );
+  await page.reload();
+  await page.getByRole('button', { name: /02 Map\s?Maker/i }).click();
+  await page
+    .locator('.library-item')
+    .filter({ hasText: v2.name })
+    .getByRole('button', { name: 'Open', exact: true })
+    .click();
+  await page
+    .getByRole('dialog', { name: 'Unsaved changes' })
+    .getByRole('button', { name: 'Discard', exact: true })
+    .click();
+  await expect(page.getByLabel('Name', { exact: true })).toHaveValue(v2.name);
+  await expect(page.getByText('Unsaved changes', { exact: true })).toHaveCount(0);
+  const exportedDoc = await exported(page, info.outputPath('legacy-v2-upgraded-v3.json'));
+  expect(exportedDoc.schemaVersion).toBe(3);
+  expect(exportedDoc.scenario.factions).toHaveLength(2);
+  expect(exportedDoc.scenario.factions[0]).toMatchObject({ id: 0, name: 'North' });
+  expect(exportedDoc.scenario.loadouts).toEqual([]);
+  expect(exportedDoc.scenario.units[0].doctrine.grenades).toEqual(
+    v2.scenario.units[0].doctrine.grenades,
+  );
+  expect(exportedDoc.scenario.units[0].doctrine.fireWhileMoving).toBe(false);
+  // Stored IndexedDB record remains untouched v2 until an explicit save.
+  const stored = await page.evaluate(
+    () =>
+      new Promise<{ document: unknown; updatedAt: string }>((resolve, reject) => {
+        const request = indexedDB.open('2nd-hand-combat', 1);
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => {
+          const db = request.result,
+            tx = db.transaction('scenarios', 'readonly');
+          const entry = tx.objectStore('scenarios').get('legacy-v2-record');
+          tx.oncomplete = () => {
+            db.close();
+            resolve(entry.result);
+          };
+          tx.onerror = () => {
+            db.close();
+            reject(tx.error);
+          };
+        };
+      }),
+  );
+  expect(stored.document).toEqual(v2);
+  expect(stored.updatedAt).toBe('2026-02-01T00:00:00.000Z');
+  // JSON import of v2 document also upgrades cleanly to v3.
+  const importedV2 = structuredClone(v2);
+  importedV2.name = 'Imported v2 JSON';
+  await importFile(page, importedV2);
+  const importedExport = await exported(page, info.outputPath('imported-v2-upgraded-v3.json'));
+  expect(importedExport.schemaVersion).toBe(3);
+  expect(importedExport.scenario.units[0].doctrine.grenades).toEqual(
+    v2.scenario.units[0].doctrine.grenades,
+  );
+  expect(importedExport.scenario.units[0].doctrine.fireWhileMoving).toBe(false);
+});
 
 test('legacy upgrades preserve supplied valid inventory doctrine and fill only absent settings', async ({
   page,
@@ -611,7 +738,7 @@ test('legacy upgrades preserve supplied valid inventory doctrine and fill only a
   await importFile(page, legacy);
   const document = await exported(page, info.outputPath('partly-extended-legacy.json'));
   const defaults = await upgraded(page, fixture());
-  expect(document.schemaVersion).toBe(2);
+  expect(document.schemaVersion).toBe(3);
   expect(document.scenario.units[0].doctrine.grenades).toEqual(grenades);
   expect(document.scenario.units[0].doctrine.medical).toEqual(
     defaults.scenario.units[0].doctrine.medical,
@@ -619,5 +746,6 @@ test('legacy upgrades preserve supplied valid inventory doctrine and fill only a
   expect(document.scenario.units[0].doctrine.outOfAmmoBehavior).toBe(
     defaults.scenario.units[0].doctrine.outOfAmmoBehavior,
   );
+  expect(document.scenario.units[0].doctrine.fireWhileMoving).toBe(false);
   expect(document.scenario.units[0].doctrine.engagementDistance).toBe(6);
 });

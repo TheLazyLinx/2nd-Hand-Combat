@@ -1,10 +1,10 @@
 # Map Maker
 
-Map Maker authors complete Skirmish scenarios in the browser. It uses the same map, soldier, doctrine, seed, and time-limit definitions as Skirmish. Combat rules remain two factions, up to eight infantry per faction, and the existing rifle.
+Map Maker authors complete Skirmish scenarios in the browser. It uses the same map, faction, soldier, doctrine, loadout, seed, and time-limit definitions as Skirmish. Scenarios require at least two distinct factions (Skirmish defaults to two and caps each faction at eight infantry, while Map Maker can add, rename, recolor, and remove factions).
 
 ## Authoring and testing
 
-Start with a blank map, copy a built-in map, or open a document from the browser library. Paint surfaces, sculpt vertex elevations, place rectangular obstacles, order patrol points, and place soldiers with individual doctrine. A blank map has open ground, zero elevation, and no patrol points or soldiers. Soldiers without patrol points react to visible enemies but do not patrol while searching.
+Start with a blank map, copy a built-in map, or open a document from the browser library. Paint surfaces, sculpt vertex elevations, place rectangular obstacles, order patrol points, configure factions (name, colour, patrol direction), and place soldiers with individual doctrine. A blank map has open ground, zero elevation, default North/South factions, and no patrol points or soldiers. Soldiers without patrol points react to visible enemies but do not patrol while searching.
 
 Use Fit Map, zoom, and pan to navigate maps from 1 to 128 cells in either dimension. Coordinates refer to world cells; rendering and camera transforms never change the scenario. Editing gestures are undoable. Selecting an object exposes its properties; numeric coordinates provide a keyboard-accessible alternative to canvas placement.
 
@@ -27,7 +27,7 @@ Portable JSON documents have this envelope:
 ```json
 {
   "format": "2nd-hand-combat-scenario",
-  "schemaVersion": 2,
+  "schemaVersion": 3,
   "name": "My scenario",
   "description": "Optional description",
   "scenario": {
@@ -38,16 +38,20 @@ Portable JSON documents have this envelope:
       "obstacles": [], "patrol": []
     },
     "seed": 1,
-    "factions": [0, 1],
+    "factions": [
+      { "id": 0, "name": "North", "color": 3235682, "patrolDirection": "forward" },
+      { "id": 1, "name": "South", "color": 10637106, "patrolDirection": "reverse" }
+    ],
+    "loadouts": [],
     "units": [],
     "timeLimit": 180
   }
 }
 ```
 
-This minimal draft has no soldiers and cannot start a battle. The map contains row-major surface cells and vertex elevations, obstacles, and ordered patrol points. Vertex rows have `width + 1` entries. Units contain stable IDs, faction, definition, position, and doctrine, including inventory-related rules. See [TERRAIN.md](TERRAIN.md) for terrain semantics. Export includes unfinished but structurally safe scenarios. Imports create new local records, never silently overwrite an existing one, and pass runtime format checks and Rust structural analysis before use. Unsupported versions and malformed files produce visible errors. Files are limited to 8 MiB. If storing an import fails, it remains open as an unsaved draft for export or testing.
+This minimal draft has no soldiers and cannot start a battle. The map contains row-major surface cells and vertex elevations, obstacles, and ordered patrol points. Vertex rows have `width + 1` entries. Factions define stable IDs, display names, 24-bit RGB colours, and patrol directions. Scenarios may define named `loadouts` composed of game-wide catalog item IDs and quantities; each unit placement carries a stable ID, faction ID, unit `definitionId`, position, doctrine, and an optional `loadout` override (omitting `loadout` uses the unit type's `defaultLoadout`). `timeLimit` may be a numeric limit in seconds (1–3600) or `null` for unlimited battles. See [TERRAIN.md](TERRAIN.md) for terrain semantics. Export includes unfinished but structurally safe scenarios. Imports create new local records, never silently overwrite an existing one, and pass runtime format checks and Rust structural analysis before use. Unsupported versions and malformed files produce visible errors. Files are limited to 8 MiB. If storing an import fails, it remains open as an unsaved draft for export or testing.
 
-Version 1 documents are normalized in memory using current Rust catalog doctrine defaults. Loading does not rewrite them or change the IndexedDB schema; save, rename, duplicate, and export produce version 2. Equipment is not persisted in old documents; soldiers receive the current fixed default loadout. See [INVENTORY.md](INVENTORY.md).
+Version 1 and version 2 documents are normalized in memory to version 3 using current Rust catalog defaults (upgrading numeric faction IDs to faction definitions, defaulting `loadouts` to `[]`, and filling absent doctrine fields). Loading does not rewrite stored records or change the IndexedDB schema; save, rename, duplicate, and export produce version 3. Old documents receive the unit type's default loadout. See [INVENTORY.md](INVENTORY.md).
 
 ## Implementation boundaries
 

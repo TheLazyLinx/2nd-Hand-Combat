@@ -155,13 +155,14 @@ mod ts_export_tests {
         assert_json_keys_match_ts(&decls, "Catalog", &cat, false);
         assert_json_keys_match_ts(&decls, "EditorRules", &cat.editor_rules, false);
         assert_json_keys_match_ts(&decls, "MapPreset", &cat.maps[0], false);
-        assert_json_keys_match_ts(&decls, "ArenaMap", &cat.map, false);
-        assert_json_keys_match_ts(&decls, "Obstacle", &cat.map.obstacles[0], false);
-        assert_json_keys_match_ts(&decls, "Point", &cat.map.patrol[0], false);
+        assert_json_keys_match_ts(&decls, "ArenaMap", &cat.maps[0].map, false);
+        assert_json_keys_match_ts(&decls, "Obstacle", &cat.maps[0].map.obstacles[0], false);
+        assert_json_keys_match_ts(&decls, "Point", &cat.maps[0].map.patrol[0], false);
         assert_json_keys_match_ts(&decls, "SurfaceDefinition", &cat.surfaces[0], false);
         assert_json_keys_match_ts(&decls, "TerrainCellInfo", &cat.terrain_cells[0][0], false);
-        assert_json_keys_match_ts(&decls, "UnitDefinition", &cat.unit, false);
-        assert_json_keys_match_ts(&decls, "WeaponDefinition", &cat.weapon, false);
+        assert_json_keys_match_ts(&decls, "UnitDefinition", &cat.units[0], false);
+        assert_json_keys_match_ts(&decls, "WeaponDefinition", &cat.weapons[0], false);
+        assert_json_keys_match_ts(&decls, "FactionDefinition", &cat.default_factions[0], false);
         assert_json_keys_match_ts(&decls, "Doctrine", &cat.default_doctrine, false);
         assert_json_keys_match_ts(
             &decls,
@@ -183,7 +184,21 @@ mod ts_export_tests {
             false,
         );
         assert_json_keys_match_ts(&decls, "ItemDefinition", &cat.items[0], false);
-        assert_json_keys_match_ts(&decls, "LoadoutEntry", &cat.default_loadout[0], false);
+        assert_json_keys_match_ts(
+            &decls,
+            "LoadoutEntry",
+            &cat.units[0].default_loadout[0],
+            false,
+        );
+        assert_json_keys_match_ts(
+            &decls,
+            "NamedLoadout",
+            &NamedLoadout {
+                name: "Marksman".into(),
+                entries: cat.units[0].default_loadout.clone(),
+            },
+            false,
+        );
         assert_json_keys_match_ts(&decls, "InventorySnapshot", &cat.default_inventory, false);
         assert_json_keys_match_ts(
             &decls,
@@ -207,27 +222,60 @@ mod ts_export_tests {
         let scenario = Scenario {
             map: ArenaMap::flat(8, 8),
             seed: 1,
-            factions: vec![0, 1],
+            factions: cat.default_factions.clone(),
+            loadouts: vec![NamedLoadout {
+                name: "Light".into(),
+                entries: vec![LoadoutEntry {
+                    item_id: "rifle".into(),
+                    quantity: 1,
+                }],
+            }],
             units: vec![
                 UnitPlacement {
                     id: 1,
                     faction: 0,
-                    definition_id: cat.unit.id.clone(),
+                    definition_id: cat.units[0].id.clone(),
                     position: Point { x: 2.5, y: 2.5 },
                     doctrine: cat.default_doctrine.clone(),
+                    loadout: None,
                 },
                 UnitPlacement {
                     id: 2,
                     faction: 1,
-                    definition_id: cat.unit.id.clone(),
+                    definition_id: cat.units[0].id.clone(),
                     position: Point { x: 5.5, y: 2.5 },
                     doctrine: cat.default_doctrine.clone(),
+                    loadout: Some(UnitLoadout::Named {
+                        name: "Light".into(),
+                    }),
                 },
             ],
-            time_limit: 1.0,
+            time_limit: Some(1.0),
         };
         assert_json_keys_match_ts(&decls, "Scenario", &scenario, false);
-        assert_json_keys_match_ts(&decls, "UnitPlacement", &scenario.units[0], false);
+        assert_json_keys_match_ts(&decls, "UnitPlacement", &scenario.units[0], true);
+        assert_json_keys_match_ts(&decls, "UnitPlacement", &scenario.units[1], false);
+        let unit_loadout_decl = decls
+            .get("UnitLoadout")
+            .expect("missing TS declaration for UnitLoadout");
+        for variant in [
+            UnitLoadout::Named {
+                name: "Light".into(),
+            },
+            UnitLoadout::Inline {
+                entries: vec![LoadoutEntry {
+                    item_id: "rifle".into(),
+                    quantity: 1,
+                }],
+            },
+        ] {
+            let val = serde_json::to_value(&variant).expect("serialize UnitLoadout");
+            let kind = val.get("kind").and_then(|v| v.as_str()).expect("kind tag");
+            assert!(
+                unit_loadout_decl.contains(&format!("\"{kind}\"")),
+                "UnitLoadout kind {kind} missing from TS union `{unit_loadout_decl}`"
+            );
+        }
 
         let validation = crate::validate_scenario(&scenario, true);
         assert_json_keys_match_ts(&decls, "Validation", &validation, false);
@@ -319,6 +367,11 @@ mod ts_export_tests {
                 OutOfAmmoBehavior::Withdraw,
                 OutOfAmmoBehavior::ContinueDoctrine,
             ],
+        );
+        assert_enum_variants_match_ts(
+            &decls,
+            "PatrolDirection",
+            &[PatrolDirection::Forward, PatrolDirection::Reverse],
         );
         assert_enum_variants_match_ts(
             &decls,

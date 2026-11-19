@@ -1,118 +1,158 @@
-use crate::types::*;
+//! Per-unit inventory storage, weight/volume capacity checks, hand slots, and atomic item use.
+//!
+//! Invariant: hot-path operations resolve items through compact `ItemId` indices rather than
+//! string lookups, and failed multi-step transitions roll back without mutating inventory state.
 
-struct ItemSpec {
-    id: &'static str,
-    name: &'static str,
-    category: &'static str,
-    mass: u32,
-    volume: u32,
-    hands: u32,
-    weapon: Option<&'static str>,
-    initial: u32,
+use crate::{
+    definitions::{WeaponId, WeaponSpec, WEAPON_RIFLE},
+    types::*,
+};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct ItemId(pub(crate) usize);
+
+pub(crate) const ITEM_RIFLE: ItemId = ItemId(0);
+pub(crate) const ITEM_RIFLE_AMMO: ItemId = ItemId(1);
+pub(crate) const ITEM_FRAG_GRENADE: ItemId = ItemId(2);
+pub(crate) const ITEM_ENTRENCHING_TOOL: ItemId = ItemId(3);
+pub(crate) const ITEM_MEDICAL_SUPPLY: ItemId = ItemId(4);
+pub(crate) const ITEM_RATION: ItemId = ItemId(5);
+pub(crate) const ITEM_WATER: ItemId = ItemId(6);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ItemCategory {
+    Weapon,
+    Ammo,
+    Grenade,
+    Tool,
+    Medical,
+    Ration,
+    Water,
 }
-impl ItemSpec {
-    fn consumable(&self) -> bool {
+
+impl ItemCategory {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Weapon => "weapon",
+            Self::Ammo => "ammo",
+            Self::Grenade => "grenade",
+            Self::Tool => "tool",
+            Self::Medical => "medical",
+            Self::Ration => "ration",
+            Self::Water => "water",
+        }
+    }
+
+    pub(crate) const fn consumable(self) -> bool {
         matches!(
-            self.category,
-            "ammo" | "grenade" | "medical" | "ration" | "water"
+            self,
+            Self::Ammo | Self::Grenade | Self::Medical | Self::Ration | Self::Water
         )
     }
 }
-const DATA: [ItemSpec; 7] = [
+
+pub(crate) struct ItemSpec {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub category: ItemCategory,
+    pub mass: u32,
+    pub volume: u32,
+    pub hands: u32,
+    pub weapon: Option<WeaponId>,
+}
+
+const ITEMS: [ItemSpec; 7] = [
     ItemSpec {
         id: "rifle",
         name: "Rifle",
-        category: "weapon",
+        category: ItemCategory::Weapon,
         mass: 4000,
         volume: 6000,
         hands: 2,
-        weapon: Some("rifle"),
-        initial: 1,
+        weapon: Some(WEAPON_RIFLE),
     },
     ItemSpec {
         id: "rifle-ammo",
         name: "Rifle rounds",
-        category: "ammo",
+        category: ItemCategory::Ammo,
         mass: 12,
         volume: 15,
         hands: 0,
         weapon: None,
-        initial: 60,
     },
     ItemSpec {
         id: "frag-grenade",
         name: "Frag grenade",
-        category: "grenade",
+        category: ItemCategory::Grenade,
         mass: 400,
         volume: 400,
         hands: 1,
         weapon: None,
-        initial: 2,
     },
     ItemSpec {
         id: "entrenching-tool",
         name: "Entrenching tool",
-        category: "tool",
+        category: ItemCategory::Tool,
         mass: 1000,
         volume: 1000,
         hands: 2,
         weapon: None,
-        initial: 1,
     },
     ItemSpec {
         id: "medical-supply",
         name: "Medical supply",
-        category: "medical",
+        category: ItemCategory::Medical,
         mass: 500,
         volume: 600,
         hands: 2,
         weapon: None,
-        initial: 2,
     },
     ItemSpec {
         id: "ration",
         name: "Ration",
-        category: "ration",
+        category: ItemCategory::Ration,
         mass: 500,
         volume: 800,
         hands: 1,
         weapon: None,
-        initial: 2,
     },
     ItemSpec {
         id: "water",
         name: "Water",
-        category: "water",
+        category: ItemCategory::Water,
         mass: 500,
         volume: 500,
         hands: 1,
         weapon: None,
-        initial: 2,
     },
 ];
-fn spec(id: &str) -> Result<&'static ItemSpec, InventoryError> {
-    DATA.iter()
-        .find(|item| item.id == id)
+
+#[inline]
+pub(crate) fn item_spec(id: ItemId) -> &'static ItemSpec {
+    &ITEMS[id.0]
+}
+
+pub(crate) fn item_id_by_str(id: &str) -> Result<ItemId, InventoryError> {
+    ITEMS
+        .iter()
+        .position(|item| item.id == id)
+        .map(ItemId)
         .ok_or(InventoryError::UnknownItem)
 }
+
 pub(crate) fn items() -> Vec<ItemDefinition> {
-    DATA.iter()
+    ITEMS
+        .iter()
         .map(|d| ItemDefinition {
             id: d.id.into(),
             name: d.name.into(),
-            category: d.category.into(),
+            category: d.category.as_str().into(),
             mass_grams: d.mass,
             volume_ml: d.volume,
             hands_required: d.hands,
-            weapon_id: d.weapon.map(str::to_owned),
-        })
-        .collect()
-}
-pub(crate) fn loadout() -> Vec<LoadoutEntry> {
-    DATA.iter()
-        .map(|d| LoadoutEntry {
-            item_id: d.id.into(),
-            quantity: d.initial,
+            weapon_id: d
+                .weapon
+                .map(|w| crate::definitions::weapon_spec(w).id.to_owned()),
         })
         .collect()
 }
@@ -125,15 +165,30 @@ pub(crate) enum InventoryError {
     Capacity,
     InvalidHands,
     InvalidEntry,
+    DuplicateItem,
+    InvalidQuantity,
     Overflow,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Entry {
+    id: u32,
+    item: ItemId,
+    quantity: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct UseRecord {
+    item: ItemId,
+    count: u32,
 }
 
 #[derive(Clone)]
 pub(crate) struct Inventory {
-    entries: Vec<InventoryEntry>,
+    entries: Vec<Entry>,
     left: Option<u32>,
     right: Option<u32>,
-    uses: Vec<ItemUse>,
+    uses: Vec<UseRecord>,
     max_weight: u32,
     max_volume: u32,
     next_id: Option<u32>,
@@ -141,6 +196,7 @@ pub(crate) struct Inventory {
     stowed_volume_ml: u32,
     load_factor: f64,
 }
+
 #[inline]
 fn compute_load_factor(weight: u32, volume: u32, max_weight: u32, max_volume: u32) -> f64 {
     let weight_fraction = if max_weight == 0 {
@@ -155,22 +211,109 @@ fn compute_load_factor(weight: u32, volume: u32, max_weight: u32, max_volume: u3
     };
     1.0 - 0.25 * weight_fraction - 0.15 * volume_fraction
 }
+
 impl Inventory {
-    pub(crate) fn new() -> Self {
-        let entries = DATA
-            .iter()
-            .enumerate()
-            .map(|(i, d)| InventoryEntry {
+    pub(crate) fn from_static_loadout(
+        loadout: &[(ItemId, u32)],
+        max_weight: u32,
+        max_volume: u32,
+    ) -> Result<Self, InventoryError> {
+        let mut entries = Vec::with_capacity(loadout.len());
+        for (i, &(item, quantity)) in loadout.iter().enumerate() {
+            if quantity == 0 {
+                return Err(InventoryError::InvalidQuantity);
+            }
+            if entries.iter().any(|existing: &Entry| existing.item == item) {
+                return Err(InventoryError::DuplicateItem);
+            }
+            entries.push(Entry {
                 id: i as u32 + 1,
-                item_id: d.id.into(),
-                quantity: d.initial,
-            })
-            .collect();
-        Self::from_parts(entries, Some(1), Some(1), 20_000, 15_000)
-            .expect("default inventory must be valid")
+                item,
+                quantity,
+            });
+        }
+        Self::build_with_default_equip(entries, max_weight, max_volume)
     }
-    fn from_parts(
-        entries: Vec<InventoryEntry>,
+
+    pub(crate) fn from_loadout(
+        loadout: &[LoadoutEntry],
+        max_weight: u32,
+        max_volume: u32,
+    ) -> Result<Self, InventoryError> {
+        let mut entries = Vec::with_capacity(loadout.len());
+        for (i, entry) in loadout.iter().enumerate() {
+            let item = item_id_by_str(&entry.item_id)?;
+            if entry.quantity == 0 {
+                return Err(InventoryError::InvalidQuantity);
+            }
+            if entries.iter().any(|existing: &Entry| existing.item == item) {
+                return Err(InventoryError::DuplicateItem);
+            }
+            entries.push(Entry {
+                id: i as u32 + 1,
+                item,
+                quantity: entry.quantity,
+            });
+        }
+        Self::build_with_default_equip(entries, max_weight, max_volume)
+    }
+
+    fn build_with_default_equip(
+        mut entries: Vec<Entry>,
+        max_weight: u32,
+        max_volume: u32,
+    ) -> Result<Self, InventoryError> {
+        let mut left = None;
+        let mut right = None;
+        if let Some(index) = entries.iter().position(|e| {
+            let s = item_spec(e.item);
+            s.weapon.is_some() && s.hands > 0
+        }) {
+            let hands = item_spec(entries[index].item).hands;
+            if hands > 2 {
+                return Err(InventoryError::InvalidHands);
+            }
+            let equipped_id = if entries[index].quantity == 1 {
+                entries[index].id
+            } else {
+                let next_id = entries
+                    .iter()
+                    .map(|e| e.id)
+                    .max()
+                    .unwrap_or(0)
+                    .checked_add(1)
+                    .ok_or(InventoryError::Overflow)?;
+                entries[index].quantity -= 1;
+                let item = entries[index].item;
+                entries.push(Entry {
+                    id: next_id,
+                    item,
+                    quantity: 1,
+                });
+                next_id
+            };
+            if hands == 2 {
+                left = Some(equipped_id);
+                right = Some(equipped_id);
+            } else {
+                right = Some(equipped_id);
+            }
+        }
+        Self::from_entries(entries, left, right, max_weight, max_volume)
+    }
+
+    pub(crate) fn default_infantry() -> Self {
+        let spec = crate::definitions::default_unit_spec();
+        Self::from_static_loadout(
+            spec.default_loadout,
+            spec.max_weight_grams,
+            spec.max_stowed_volume_ml,
+        )
+        .expect("default infantry inventory must be valid")
+    }
+
+    fn from_entries(
+        entries: Vec<Entry>,
         left: Option<u32>,
         right: Option<u32>,
         max_weight: u32,
@@ -197,10 +340,11 @@ impl Inventory {
         inventory.validate()?;
         Ok(inventory)
     }
+
     fn totals(&self) -> Result<(u32, u32), InventoryError> {
         let (mut weight, mut volume) = (0u32, 0u32);
         for (index, entry) in self.entries.iter().enumerate() {
-            let d = spec(&entry.item_id)?;
+            let d = item_spec(entry.item);
             if self.entries[..index]
                 .iter()
                 .any(|other| other.id == entry.id)
@@ -241,6 +385,7 @@ impl Inventory {
         }
         Ok((weight, volume))
     }
+
     fn validate(&mut self) -> Result<(), InventoryError> {
         let (weight, volume) = self.totals()?;
         if weight > self.max_weight || volume > self.max_volume {
@@ -251,28 +396,53 @@ impl Inventory {
         self.load_factor = compute_load_factor(weight, volume, self.max_weight, self.max_volume);
         Ok(())
     }
-    pub(crate) fn count(&self, id: &str) -> u32 {
+
+    pub(crate) fn count_item(&self, item: ItemId) -> u32 {
         self.entries
             .iter()
-            .filter(|e| e.item_id == id)
+            .filter(|e| e.item == item)
             .map(|e| e.quantity)
             .sum()
     }
-    pub(crate) fn held_weapon_spec(&self) -> Option<&'static crate::definitions::WeaponSpec> {
+
+    pub(crate) fn weapon_entries(&self) -> Vec<(u32, WeaponId)> {
+        self.entries
+            .iter()
+            .filter_map(|e| {
+                let weapon = item_spec(e.item).weapon?;
+                (e.quantity > 0).then_some((e.id, weapon))
+            })
+            .collect()
+    }
+
+    pub(crate) fn held_weapon_entry(&self) -> Option<(u32, WeaponId)> {
         [self.left, self.right]
             .into_iter()
             .flatten()
             .find_map(|id| {
                 let entry = self.entries.iter().find(|entry| entry.id == id)?;
-                let weapon_id = spec(&entry.item_id).ok()?.weapon?;
-                crate::definitions::weapon_spec(weapon_id)
+                let weapon = item_spec(entry.item).weapon?;
+                Some((entry.id, weapon))
             })
     }
+
+    pub(crate) fn held_weapon_spec(&self) -> Option<&'static WeaponSpec> {
+        self.held_weapon_entry()
+            .map(|(_, weapon_id)| crate::definitions::weapon_spec(weapon_id))
+    }
+
+    pub(crate) fn find_usable_category(&self, category: ItemCategory) -> Option<ItemId> {
+        self.entries.iter().find_map(|entry| {
+            (item_spec(entry.item).category == category && self.can_use_item(entry.item))
+                .then_some(entry.item)
+        })
+    }
+
     #[inline]
     pub(crate) fn load_factor(&self) -> f64 {
         self.load_factor
     }
-    // Operations act on a candidate so failed intermediate steps never alter the inventory.
+
     fn stow_all(&mut self) -> Result<(), InventoryError> {
         let mut candidate = self.clone();
         candidate.left = None;
@@ -281,19 +451,21 @@ impl Inventory {
         *self = candidate;
         Ok(())
     }
+
     fn equip(&mut self, id: u32, hand: bool) -> Result<u32, InventoryError> {
         let mut candidate = self.clone();
         let equipped = candidate.equip_inner(id, hand)?;
         *self = candidate;
         Ok(equipped)
     }
+
     fn equip_inner(&mut self, id: u32, hand: bool) -> Result<u32, InventoryError> {
         let index = self
             .entries
             .iter()
             .position(|entry| entry.id == id)
             .ok_or(InventoryError::InvalidEntry)?;
-        let hands = spec(&self.entries[index].item_id)?.hands;
+        let hands = item_spec(self.entries[index].item).hands;
         if hands == 0 || self.entries[index].quantity == 0 {
             return Err(InventoryError::Unavailable);
         }
@@ -309,9 +481,10 @@ impl Inventory {
             let next_id = self.next_id.ok_or(InventoryError::Overflow)?;
             self.next_id = next_id.checked_add(1);
             self.entries[index].quantity -= 1;
-            self.entries.push(InventoryEntry {
+            let item = self.entries[index].item;
+            self.entries.push(Entry {
                 id: next_id,
-                item_id: self.entries[index].item_id.clone(),
+                item,
                 quantity: 1,
             });
             next_id
@@ -327,33 +500,32 @@ impl Inventory {
         self.validate()?;
         Ok(equipped)
     }
-    fn record_use(&mut self, id: &str) -> Result<(), InventoryError> {
-        if let Some(used) = self.uses.iter_mut().find(|used| used.item_id == id) {
+
+    fn record_use(&mut self, item: ItemId) -> Result<(), InventoryError> {
+        if let Some(used) = self.uses.iter_mut().find(|used| used.item == item) {
             used.count = used.count.checked_add(1).ok_or(InventoryError::Overflow)?;
         } else {
-            self.uses.push(ItemUse {
-                item_id: id.into(),
-                count: 1,
-            });
+            self.uses.push(UseRecord { item, count: 1 });
         }
         Ok(())
     }
-    pub(crate) fn consume(&mut self, id: &str) -> Result<(), InventoryError> {
-        let item = spec(id)?;
-        if !item.consumable() {
+
+    pub(crate) fn consume_item(&mut self, item_id: ItemId) -> Result<(), InventoryError> {
+        let item = item_spec(item_id);
+        if !item.category.consumable() {
             return Err(InventoryError::NotConsumable);
         }
         let idx = self
             .entries
             .iter()
             .position(|entry| {
-                entry.item_id == id
+                entry.item == item_id
                     && entry.quantity > 0
                     && self.left != Some(entry.id)
                     && self.right != Some(entry.id)
             })
             .ok_or(InventoryError::Unavailable)?;
-        if let Some(used) = self.uses.iter().find(|used| used.item_id == id) {
+        if let Some(used) = self.uses.iter().find(|used| used.item == item_id) {
             used.count.checked_add(1).ok_or(InventoryError::Overflow)?;
         }
         self.entries[idx].quantity -= 1;
@@ -365,17 +537,18 @@ impl Inventory {
             self.max_weight,
             self.max_volume,
         );
-        self.record_use(id)?;
+        self.record_use(item_id)?;
         Ok(())
     }
-    pub(crate) fn can_use(&self, id: &str) -> bool {
-        let Ok(item) = spec(id) else { return false };
-        if !item.consumable() {
+
+    pub(crate) fn can_use_item(&self, item_id: ItemId) -> bool {
+        let item = item_spec(item_id);
+        if !item.category.consumable() {
             return false;
         }
         let entry = if item.hands == 0 {
             self.entries.iter().find(|entry| {
-                entry.item_id == id
+                entry.item == item_id
                     && entry.quantity > 0
                     && self.left != Some(entry.id)
                     && self.right != Some(entry.id)
@@ -383,7 +556,7 @@ impl Inventory {
         } else {
             self.entries
                 .iter()
-                .find(|entry| entry.item_id == id && entry.quantity > 0)
+                .find(|entry| entry.item == item_id && entry.quantity > 0)
         };
         let Some(entry) = entry else { return false };
         if item.hands != 0 {
@@ -396,14 +569,13 @@ impl Inventory {
                 if index == 1 && self.left == Some(held_id) {
                     continue;
                 }
-                let held = self
-                    .entries
-                    .iter()
-                    .find(|entry| entry.id == held_id)
-                    .expect("valid hand reference");
-                stowed = stowed
-                    .checked_add(spec(&held.item_id).expect("valid item").volume)
-                    .expect("inventory volume overflow");
+                let Some(held) = self.entries.iter().find(|entry| entry.id == held_id) else {
+                    return false;
+                };
+                let Some(next) = stowed.checked_add(item_spec(held.item).volume) else {
+                    return false;
+                };
+                stowed = next;
             }
             if stowed > self.max_volume {
                 return false;
@@ -411,25 +583,25 @@ impl Inventory {
             if self.left == Some(entry.id) || self.right == Some(entry.id) {
                 return false;
             }
-            if entry.quantity > 1 {
-                self.next_id.expect("inventory entry id overflow");
+            if entry.quantity > 1 && self.next_id.is_none() {
+                return false;
             }
         }
-        if let Some(used) = self.uses.iter().find(|used| used.item_id == id) {
-            used.count
-                .checked_add(1)
-                .expect("inventory use counter overflow");
+        if let Some(used) = self.uses.iter().find(|used| used.item == item_id) {
+            if used.count.checked_add(1).is_none() {
+                return false;
+            }
         }
         true
     }
-    pub(crate) fn use_item(&mut self, id: &str) -> Result<(), InventoryError> {
-        let item = spec(id)?;
-        if !item.consumable() {
+
+    pub(crate) fn use_item_by_id(&mut self, item_id: ItemId) -> Result<(), InventoryError> {
+        let item = item_spec(item_id);
+        if !item.category.consumable() {
             return Err(InventoryError::NotConsumable);
         }
-        let hands = item.hands;
-        if hands == 0 {
-            return self.consume(id);
+        if item.hands == 0 {
+            return self.consume_item(item_id);
         }
         let mut candidate = self.clone();
         let original_left = candidate.left;
@@ -438,7 +610,7 @@ impl Inventory {
         let entry_id = candidate
             .entries
             .iter()
-            .find(|entry| entry.item_id == id && entry.quantity > 0)
+            .find(|entry| entry.item == item_id && entry.quantity > 0)
             .ok_or(InventoryError::Unavailable)?
             .id;
         let held = candidate.equip(entry_id, true)?;
@@ -455,7 +627,7 @@ impl Inventory {
         candidate.left = None;
         candidate.right = None;
         candidate.validate()?;
-        candidate.record_use(id)?;
+        candidate.record_use(item_id)?;
         if let Some(id) = original_left {
             candidate.equip(id, true)?;
         }
@@ -468,9 +640,18 @@ impl Inventory {
         *self = candidate;
         Ok(())
     }
+
     pub(crate) fn snapshot(&self) -> InventorySnapshot {
         InventorySnapshot {
-            entries: self.entries.clone(),
+            entries: self
+                .entries
+                .iter()
+                .map(|e| InventoryEntry {
+                    id: e.id,
+                    item_id: item_spec(e.item).id.into(),
+                    quantity: e.quantity,
+                })
+                .collect(),
             left_hand: self.left,
             right_hand: self.right,
             weight_grams: self.weight_grams,
@@ -478,24 +659,69 @@ impl Inventory {
             max_weight_grams: self.max_weight,
             max_stowed_volume_ml: self.max_volume,
             load_factor: self.load_factor,
-            uses: self.uses.clone(),
+            uses: self
+                .uses
+                .iter()
+                .map(|u| ItemUse {
+                    item_id: item_spec(u.item).id.into(),
+                    count: u.count,
+                })
+                .collect(),
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn count(&self, id: &str) -> u32 {
+        item_id_by_str(id)
+            .map(|item| self.count_item(item))
+            .unwrap_or(0)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn can_use(&self, id: &str) -> bool {
+        item_id_by_str(id)
+            .map(|item| self.can_use_item(item))
+            .unwrap_or(false)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn consume(&mut self, id: &str) -> Result<(), InventoryError> {
+        let item = item_id_by_str(id)?;
+        self.consume_item(item)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn use_item(&mut self, id: &str) -> Result<(), InventoryError> {
+        let item = item_id_by_str(id)?;
+        self.use_item_by_id(item)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    fn entry(id: u32, item: &str, quantity: u32) -> InventoryEntry {
-        InventoryEntry {
+
+    fn entry(id: u32, item: &str, quantity: u32) -> Entry {
+        Entry {
             id,
-            item_id: item.into(),
+            item: item_id_by_str(item).expect("known test item"),
             quantity,
         }
     }
+
+    fn from_parts(
+        entries: Vec<Entry>,
+        left: Option<u32>,
+        right: Option<u32>,
+        max_weight: u32,
+        max_volume: u32,
+    ) -> Result<Inventory, InventoryError> {
+        Inventory::from_entries(entries, left, right, max_weight, max_volume)
+    }
+
     #[test]
     fn default_quick_use_restores_rifle_and_consumes_one() {
-        let mut inv = Inventory::new();
+        let mut inv = Inventory::default_infantry();
         assert_eq!(
             (inv.snapshot().weight_grams, inv.snapshot().stowed_volume_ml),
             (9520, 6500)
@@ -507,19 +733,20 @@ mod tests {
         assert_eq!(inv.count("water"), 1);
         assert_eq!(after.uses[0].count, 1);
     }
+
     #[test]
     fn construction_checks_capacity_boundaries_and_overflow() {
-        assert!(Inventory::from_parts(vec![entry(1, "water", 2)], None, None, 1000, 1000).is_ok());
+        assert!(from_parts(vec![entry(1, "water", 2)], None, None, 1000, 1000).is_ok());
         assert!(matches!(
-            Inventory::from_parts(vec![entry(1, "water", 2)], None, None, 999, 1000),
+            from_parts(vec![entry(1, "water", 2)], None, None, 999, 1000),
             Err(InventoryError::Capacity)
         ));
         assert!(matches!(
-            Inventory::from_parts(vec![entry(1, "water", 2)], None, None, 1000, 999),
+            from_parts(vec![entry(1, "water", 2)], None, None, 1000, 999),
             Err(InventoryError::Capacity)
         ));
         assert!(matches!(
-            Inventory::from_parts(
+            from_parts(
                 vec![entry(1, "water", u32::MAX)],
                 None,
                 None,
@@ -529,36 +756,35 @@ mod tests {
             Err(InventoryError::Overflow)
         ));
     }
+
     #[test]
     fn held_items_require_valid_hand_references_and_single_instances() {
-        assert!(
-            Inventory::from_parts(vec![entry(1, "rifle", 1)], Some(1), Some(1), 4000, 0).is_ok()
-        );
+        assert!(from_parts(vec![entry(1, "rifle", 1)], Some(1), Some(1), 4000, 0).is_ok());
         assert!(matches!(
-            Inventory::from_parts(vec![entry(1, "rifle", 1)], Some(1), None, 4000, 6000),
+            from_parts(vec![entry(1, "rifle", 1)], Some(1), None, 4000, 6000),
             Err(InventoryError::InvalidHands)
         ));
         assert!(matches!(
-            Inventory::from_parts(vec![entry(1, "water", 2)], Some(1), None, 1000, 1000),
+            from_parts(vec![entry(1, "water", 2)], Some(1), None, 1000, 1000),
             Err(InventoryError::InvalidHands)
         ));
         assert!(matches!(
-            Inventory::from_parts(vec![entry(1, "water", 1)], Some(1), Some(1), 500, 500),
+            from_parts(vec![entry(1, "water", 1)], Some(1), Some(1), 500, 500),
             Err(InventoryError::InvalidHands)
         ));
         assert!(matches!(
-            Inventory::from_parts(vec![], Some(7), None, 0, 0),
+            from_parts(vec![], Some(7), None, 0, 0),
             Err(InventoryError::InvalidHands)
         ));
         assert!(matches!(
-            Inventory::from_parts(vec![entry(1, "water", 0)], Some(1), None, 500, 500),
+            from_parts(vec![entry(1, "water", 0)], Some(1), None, 500, 500),
             Err(InventoryError::InvalidHands)
         ));
     }
+
     #[test]
     fn equip_splits_stack_with_stable_original_id() {
-        let mut inv =
-            Inventory::from_parts(vec![entry(5, "water", 2)], None, None, 1000, 1000).unwrap();
+        let mut inv = from_parts(vec![entry(5, "water", 2)], None, None, 1000, 1000).unwrap();
         let held = inv.equip(5, true).unwrap();
         assert_ne!(held, 5);
         assert_eq!(
@@ -567,9 +793,10 @@ mod tests {
         );
         assert_eq!(inv.snapshot().stowed_volume_ml, 500);
     }
+
     #[test]
     fn intermediate_stow_failure_rolls_back_before_supply_is_removed() {
-        let mut inv = Inventory::from_parts(
+        let mut inv = from_parts(
             vec![
                 entry(1, "rifle", 1),
                 entry(2, "water", 2),
@@ -587,9 +814,10 @@ mod tests {
         assert_eq!(inv.use_item("water"), Err(InventoryError::Capacity));
         assert_eq!(inv.snapshot(), before);
     }
+
     #[test]
     fn unavailable_and_unknown_items_leave_state_unchanged() {
-        let mut inv = Inventory::new();
+        let mut inv = Inventory::default_infantry();
         let before = inv.snapshot();
         assert_eq!(inv.use_item("unknown"), Err(InventoryError::UnknownItem));
         assert_eq!(inv.consume("unknown"), Err(InventoryError::UnknownItem));
@@ -601,9 +829,10 @@ mod tests {
         assert_eq!(inv.snapshot(), empty);
         assert_ne!(before, empty);
     }
+
     #[test]
     fn reusable_tools_and_weapons_cannot_be_consumed() {
-        let mut inventory = Inventory::new();
+        let mut inventory = Inventory::default_infantry();
         let before = inventory.snapshot();
         for id in ["entrenching-tool", "rifle"] {
             assert!(!inventory.can_use(id));
@@ -612,11 +841,12 @@ mod tests {
         }
         assert_eq!(inventory.snapshot(), before);
     }
+
     #[test]
     fn eligibility_matches_transactions_across_inventory_states() {
         let mut scenarios = vec![
-            Inventory::new(),
-            Inventory::from_parts(
+            Inventory::default_infantry(),
+            from_parts(
                 vec![
                     entry(1, "rifle", 1),
                     entry(2, "water", 2),
@@ -629,7 +859,7 @@ mod tests {
                 15000,
             )
             .unwrap(),
-            Inventory::from_parts(vec![entry(1, "water", 1)], Some(1), None, 500, 500).unwrap(),
+            from_parts(vec![entry(1, "water", 1)], Some(1), None, 500, 500).unwrap(),
         ];
         for inv in &mut scenarios {
             for id in [
@@ -644,10 +874,10 @@ mod tests {
             }
         }
     }
+
     #[test]
     fn repeated_uses_do_not_accumulate_split_entries() {
-        let mut inv =
-            Inventory::from_parts(vec![entry(1, "water", 100)], None, None, 50000, 50000).unwrap();
+        let mut inv = from_parts(vec![entry(1, "water", 100)], None, None, 50000, 50000).unwrap();
         for _ in 0..99 {
             inv.use_item("water").unwrap();
             assert_eq!(inv.entries.len(), 1);
@@ -657,15 +887,81 @@ mod tests {
         assert_eq!(inv.entries.len(), 1);
         assert_eq!((inv.left, inv.right), (None, None));
     }
+
     #[test]
     fn weight_and_volume_independently_reduce_load_factor() {
-        let held =
-            Inventory::from_parts(vec![entry(1, "water", 1)], Some(1), None, 1000, 1000).unwrap();
-        let stowed =
-            Inventory::from_parts(vec![entry(1, "water", 1)], None, None, 1000, 1000).unwrap();
+        let held = from_parts(vec![entry(1, "water", 1)], Some(1), None, 1000, 1000).unwrap();
+        let stowed = from_parts(vec![entry(1, "water", 1)], None, None, 1000, 1000).unwrap();
         let lighter_limit =
-            Inventory::from_parts(vec![entry(1, "water", 1)], Some(1), None, 2000, 1000).unwrap();
+            from_parts(vec![entry(1, "water", 1)], Some(1), None, 2000, 1000).unwrap();
         assert!(held.load_factor() < lighter_limit.load_factor());
         assert!(stowed.load_factor() < held.load_factor());
+    }
+
+    #[test]
+    fn from_loadout_equips_primary_weapon_and_rejects_bad_loadouts() {
+        let custom = vec![
+            LoadoutEntry {
+                item_id: "rifle".into(),
+                quantity: 1,
+            },
+            LoadoutEntry {
+                item_id: "rifle-ammo".into(),
+                quantity: 10,
+            },
+        ];
+        let inv = Inventory::from_loadout(&custom, 20_000, 15_000).unwrap();
+        assert_eq!(inv.held_weapon_spec().map(|w| w.id), Some("rifle"));
+        assert_eq!(inv.count("rifle-ammo"), 10);
+
+        let unarmed = vec![LoadoutEntry {
+            item_id: "medical-supply".into(),
+            quantity: 2,
+        }];
+        let medic = Inventory::from_loadout(&unarmed, 20_000, 15_000).unwrap();
+        assert!(medic.held_weapon_spec().is_none());
+
+        assert_eq!(
+            Inventory::from_loadout(
+                &[LoadoutEntry {
+                    item_id: "unknown".into(),
+                    quantity: 1,
+                }],
+                20_000,
+                15_000,
+            )
+            .err(),
+            Some(InventoryError::UnknownItem)
+        );
+        assert_eq!(
+            Inventory::from_loadout(
+                &[LoadoutEntry {
+                    item_id: "water".into(),
+                    quantity: 0,
+                }],
+                20_000,
+                15_000,
+            )
+            .err(),
+            Some(InventoryError::InvalidQuantity)
+        );
+        assert_eq!(
+            Inventory::from_loadout(
+                &[
+                    LoadoutEntry {
+                        item_id: "water".into(),
+                        quantity: 1,
+                    },
+                    LoadoutEntry {
+                        item_id: "water".into(),
+                        quantity: 1,
+                    },
+                ],
+                20_000,
+                15_000,
+            )
+            .err(),
+            Some(InventoryError::DuplicateItem)
+        );
     }
 }

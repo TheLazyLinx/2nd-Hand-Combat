@@ -1,13 +1,6 @@
 import { Application, Container, Graphics, Text } from 'pixi.js';
-import type {
-  AnalysisIssue,
-  Catalog,
-  Scenario,
-  Snapshot,
-  UnitPlacement,
-  UnitSnapshot,
-  Point,
-} from './types';
+import { factionColor, unitDefinition } from './factions';
+import type { AnalysisIssue, Catalog, Scenario, Snapshot, UnitSnapshot, Point } from './types';
 
 export interface Camera {
   x: number;
@@ -118,7 +111,6 @@ export class Battlefield {
     snapshot: Snapshot | null,
     selected: number | null,
     showHp: boolean,
-    maxHp: number,
     running: boolean,
     catalog: Catalog,
     overlay: boolean,
@@ -194,17 +186,19 @@ export class Battlefield {
         view.shots = state.shotsFired;
       }
       if (!running && state) view.container.position.set(state.position.x, state.position.y);
+      const color = factionColor(scenario.factions, placement.faction);
+      const unitMaxHp = unitDefinition(catalog, placement.definitionId).maxHp;
       const appearance = JSON.stringify([
-        scenario.factions.indexOf(placement.faction),
+        color,
         selected === placement.id,
         state?.behavior,
         state?.hp,
         showHp,
-        maxHp,
+        unitMaxHp,
       ]);
       if (view.appearance !== appearance) {
         view.appearance = appearance;
-        this.drawUnit(view.graphic, placement, state, selected === placement.id, showHp, maxHp);
+        this.drawUnit(view.graphic, color, state, selected === placement.id, showHp, unitMaxHp);
       }
     }
     this.snapshotTick = snapshot?.tick ?? null;
@@ -214,7 +208,7 @@ export class Battlefield {
       this.range
         .circle(selection.position.x, selection.position.y, selection.doctrine.engagementDistance)
         .stroke({
-          color: selection.faction === scenario.factions[0] ? 0x315f62 : 0xa24f32,
+          color: factionColor(scenario.factions, selection.faction),
           alpha: 0.45,
           width: 0.06,
         });
@@ -335,13 +329,12 @@ export class Battlefield {
 
   private drawUnit(
     g: Graphics,
-    placement: UnitPlacement,
+    color: number,
     state: UnitSnapshot | undefined,
     selected: boolean,
     showHp: boolean,
     maxHp: number,
   ) {
-    const color = placement.faction === this.scenario?.factions[0] ? 0x315f62 : 0xa24f32;
     g.clear().circle(0, 0, 0.38).fill({ color: 0x20271f, alpha: 0.3 });
     g.circle(0, -0.05, 0.3)
       .fill(state?.behavior === 'Dead' ? 0x777368 : color)
