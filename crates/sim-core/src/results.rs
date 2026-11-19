@@ -1,11 +1,12 @@
 //! Victory and battle termination evaluation across arbitrary faction counts.
 //!
 //! Invariant: a battle ends when zero factions survive (`simultaneous_elimination`), when no two
-//! surviving factions remain hostile to each other (`elimination`), or when `time_limit` is met.
+//! surviving factions remain hostile to each other (`elimination`), when `time_limit` is met
+//! (`timeout`), or when ended explicitly by the player (`stopped`).
 
 use crate::{types::*, unit::Unit};
 
-pub(crate) fn evaluate(scenario: &Scenario, units: &[Unit], tick: u32) -> Option<BattleResult> {
+fn faction_results(scenario: &Scenario, units: &[Unit]) -> (Vec<usize>, Vec<FactionResult>) {
     let survivors: Vec<usize> = scenario
         .factions
         .iter()
@@ -16,6 +17,24 @@ pub(crate) fn evaluate(scenario: &Scenario, units: &[Unit], tick: u32) -> Option
                 .count()
         })
         .collect();
+    let results = scenario
+        .factions
+        .iter()
+        .zip(survivors.iter())
+        .map(|(f, &n)| {
+            let total = units.iter().filter(|u| u.placement.faction == f.id).count() as u32;
+            FactionResult {
+                faction: f.id,
+                survivors: n as u32,
+                casualties: total - n as u32,
+            }
+        })
+        .collect();
+    (survivors, results)
+}
+
+pub(crate) fn evaluate(scenario: &Scenario, units: &[Unit], tick: u32) -> Option<BattleResult> {
+    let (survivors, factions) = faction_results(scenario, units);
     let surviving_factions: Vec<u32> = scenario
         .factions
         .iter()
@@ -38,19 +57,6 @@ pub(crate) fn evaluate(scenario: &Scenario, units: &[Unit], tick: u32) -> Option
         None
     };
     let reason = reason?;
-    let factions = scenario
-        .factions
-        .iter()
-        .zip(survivors.iter())
-        .map(|(f, &n)| {
-            let total = units.iter().filter(|u| u.placement.faction == f.id).count() as u32;
-            FactionResult {
-                faction: f.id,
-                survivors: n as u32,
-                casualties: total - n as u32,
-            }
-        })
-        .collect();
     let winner = if surviving_factions.len() == 1 {
         Some(surviving_factions[0])
     } else {
@@ -62,4 +68,15 @@ pub(crate) fn evaluate(scenario: &Scenario, units: &[Unit], tick: u32) -> Option
         elapsed,
         factions,
     })
+}
+
+/// Immediately concludes an active battle as a draw with `reason: "stopped"`.
+pub(crate) fn stopped(scenario: &Scenario, units: &[Unit], tick: u32) -> BattleResult {
+    let (_, factions) = faction_results(scenario, units);
+    BattleResult {
+        winner: None,
+        reason: "stopped".into(),
+        elapsed: tick as f64 * crate::definitions::STEP,
+        factions,
+    }
 }

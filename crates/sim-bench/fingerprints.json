@@ -14,8 +14,10 @@
   "scenarios": {
     "engagement_long": "19e12a1abae4c26a",
     "engagement_short": "baeb8f151390f9d7",
-    "fallback_high": "b77dd16544d6982e",
+    "fallback_high": "ecfda3ab78028541",
     "fallback_none": "363f5f54e5d6a728",
+    "fire_on_move_off": "ac4f9aa350e7dab4",
+    "fire_on_move_on": "6c926b09bf2f904b",
     "grenades_any_safe": "efabe05e8d4bc671",
     "grenades_never": "d48243d7e37ec187",
     "medical_low_health": "19dc997790743c44",

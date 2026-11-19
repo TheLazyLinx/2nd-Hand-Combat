@@ -132,6 +132,11 @@ async function command(message: WorkerCommand) {
   } else if (message.type === 'resume') {
     if (emittedResult) throw new Error('Reset the finished battle before starting again.');
     if (!running) run();
+  } else if (message.type === 'stop') {
+    if (emittedResult) return;
+    stop();
+    battle.stop();
+    publish(snapshot());
   }
 }
 

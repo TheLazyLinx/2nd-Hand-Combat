@@ -167,6 +167,16 @@ impl Battle {
     pub fn is_finished(&self) -> bool {
         self.result.is_some()
     }
+    /// Immediately concludes an unfinished battle as a draw (`reason: "stopped"`).
+    /// Preserves the existing terminal result if the battle has already ended.
+    pub fn stop(&mut self) -> BattleResult {
+        if let Some(result) = &self.result {
+            return result.clone();
+        }
+        let result = crate::results::stopped(&self.scenario, &self.units, self.tick);
+        self.result = Some(result.clone());
+        result
+    }
     pub fn step(&mut self) {
         self.step_with(&mut NoopTimer);
     }

@@ -66,7 +66,8 @@
     brushRadius = 0;
   let terrainOverlay = true,
     inspectX = 0,
-    inspectY = 0;
+    inspectY = 0,
+    lastTimeLimit = 600;
   let lastPoint: Point | null = null;
   let x = 0,
     y = 0,
@@ -233,6 +234,7 @@
     if (message.type === 'ready') {
       catalog = message.catalog;
       if (!session) session = createSession(blankDocument(catalog));
+      lastTimeLimit = session.document.scenario.timeLimit ?? catalog.defaultTimeLimit;
       width = session.document.scenario.map.width;
       height = session.document.scenario.map.height;
       publish();
@@ -677,8 +679,16 @@
       input.value = scenario[field] === null ? '' : String(scenario[field]);
       return;
     }
+    if (field === 'timeLimit') lastTimeLimit = value;
     edit((d) => {
       d.scenario[field] = value;
+    });
+  }
+  function toggleNoTimeLimit(unlimited: boolean) {
+    if (!scenario || !catalog) return;
+    if (unlimited && scenario.timeLimit !== null) lastTimeLimit = scenario.timeLimit;
+    edit((d) => {
+      d.scenario.timeLimit = unlimited ? null : lastTimeLimit || catalog!.defaultTimeLimit;
     });
   }
   function moveSelected(axis: 'x' | 'y', value: number) {
@@ -1097,9 +1107,17 @@
             Time limit <input
               type="number"
               min="1"
+              disabled={scenario.timeLimit === null}
               value={scenario.timeLimit ?? ''}
               onchange={(e) => changeNumber('timeLimit', e.currentTarget)}
             />
+          </label><label class="checkbox-row">
+            <input
+              data-testid="maker-no-time-limit"
+              type="checkbox"
+              checked={scenario.timeLimit === null}
+              onchange={(e) => toggleNoTimeLimit(e.currentTarget.checked)}
+            /> No time limit
           </label>
         </section>
         <section aria-label="Factions">
@@ -1371,6 +1389,15 @@
   aside textarea {
     display: block;
     margin-top: 0.3rem;
+  }
+  aside label.checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  aside label.checkbox-row input {
+    display: inline-block;
+    margin-top: 0;
   }
   input,
   textarea,

@@ -434,7 +434,7 @@ pub fn catalog() -> Catalog {
         default_inventory: crate::inventory::Inventory::default_infantry().snapshot(),
         doctrine_rules: doctrine_rules(),
         max_per_faction: crate::validation::SKIRMISH_MAX_PER_FACTION,
-        default_time_limit: 180.0,
+        default_time_limit: 600.0,
         default_seed: 1,
     }
 }

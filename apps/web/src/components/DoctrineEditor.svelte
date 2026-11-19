@@ -75,6 +75,17 @@
   >
     <option value="fastest">Fastest</option><option value="protected">Protected</option>
   </select>
+  <label class="toggle" for="fire-while-moving">
+    <span>Fire while moving</span>
+    <input
+      id="fire-while-moving"
+      data-testid="fire-while-moving"
+      type="checkbox"
+      disabled={busy}
+      checked={unit.doctrine.fireWhileMoving}
+      onchange={(e) => onChange('fireWhileMoving', e.currentTarget.checked)}
+    />
+  </label>
   <details>
     <summary>Grenades</summary>
     <label for="grenade-policy">Grenade policy</label>

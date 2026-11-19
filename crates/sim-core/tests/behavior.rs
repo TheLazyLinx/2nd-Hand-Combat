@@ -256,10 +256,18 @@ fn combat_reports_elimination_and_casualties() {
 fn fallback_can_fire_at_a_visible_enemy() {
     let mut s = scenario(p(8.5, 10.5), p(12.5, 10.5));
     s.units[0].doctrine.fallback_hp = 100.0;
-    let mut b = Battle::new(s).unwrap();
-    b.step();
-    assert_eq!(b.snapshot().units[0].behavior, Behavior::FallingBack);
-    assert_eq!(b.snapshot().units[0].shots_fired, 1);
+    // Default fire_while_moving is off: falling back does not fire while moving.
+    let mut off = Battle::new(s.clone()).unwrap();
+    off.step();
+    assert_eq!(off.snapshot().units[0].behavior, Behavior::FallingBack);
+    assert_eq!(off.snapshot().units[0].shots_fired, 0);
+
+    // Explicitly enabling fire_while_moving allows firing while falling back.
+    s.units[0].doctrine.fire_while_moving = true;
+    let mut on = Battle::new(s).unwrap();
+    on.step();
+    assert_eq!(on.snapshot().units[0].behavior, Behavior::FallingBack);
+    assert_eq!(on.snapshot().units[0].shots_fired, 1);
 }
 #[test]
 fn fallback_moves_toward_safer_ally_when_no_cover() {
@@ -524,4 +532,72 @@ fn unlimited_time_limit_does_not_timeout() {
     let mut battle = Battle::new(s).unwrap();
     run(&mut battle, 200);
     assert!(battle.snapshot().result.is_none());
+}
+
+#[test]
+fn fire_while_moving_doctrine_changes_shots_while_advancing() {
+    let mut base = scenario(p(2.5, 5.5), p(12.5, 5.5));
+    base.units[0].doctrine.engagement_distance = 2.0;
+    base.units[0].doctrine.grenades.policy = GrenadePolicy::Never;
+    base.units[1].doctrine.engagement_distance = 12.0;
+    base.units[1].doctrine.grenades.policy = GrenadePolicy::Never;
+
+    let mut off = base.clone();
+    off.units[0].doctrine.fire_while_moving = false;
+    let mut on = base;
+    on.units[0].doctrine.fire_while_moving = true;
+
+    let mut battle_off = Battle::new(off).unwrap();
+    let mut battle_on = Battle::new(on).unwrap();
+    let mut off_shots_advancing = 0;
+    let mut on_shots_advancing = 0;
+    let mut prev_off = 0;
+    let mut prev_on = 0;
+    for _ in 0..80 {
+        battle_off.step();
+        battle_on.step();
+        let snap_off = battle_off.snapshot();
+        let snap_on = battle_on.snapshot();
+        if snap_off.units[0].behavior == Behavior::Advancing {
+            off_shots_advancing += snap_off.units[0].shots_fired - prev_off;
+        }
+        if snap_on.units[0].behavior == Behavior::Advancing {
+            on_shots_advancing += snap_on.units[0].shots_fired - prev_on;
+        }
+        prev_off = snap_off.units[0].shots_fired;
+        prev_on = snap_on.units[0].shots_fired;
+    }
+    assert_eq!(off_shots_advancing, 0);
+    assert!(
+        on_shots_advancing > 0,
+        "expected moving soldier with fire_while_moving=true to fire while advancing"
+    );
+}
+
+#[test]
+fn stop_concludes_battle_as_stopped_draw_and_preserves_existing_result() {
+    let mut s = scenario(p(1.5, 1.5), p(30.5, 18.5));
+    s.time_limit = None;
+    let mut battle = Battle::new(s).unwrap();
+    run(&mut battle, 20);
+    assert!(!battle.is_finished());
+    let stopped = battle.stop();
+    assert_eq!(stopped.winner, None);
+    assert_eq!(stopped.reason, "stopped");
+    assert!((stopped.elapsed - 1.0).abs() < 1e-9);
+    assert_eq!(stopped.factions.len(), 2);
+    assert!(stopped
+        .factions
+        .iter()
+        .all(|f| f.survivors == 1 && f.casualties == 0));
+    assert!(battle.is_finished());
+    let frozen = battle.snapshot();
+    run(&mut battle, 20);
+    assert_eq!(battle.snapshot(), frozen);
+
+    // Calling stop() after a natural elimination must keep the elimination result.
+    let mut combat = Battle::new(scenario(p(3.5, 3.5), p(7.5, 3.5))).unwrap();
+    assert!(run_until(&mut combat, 1000, |snap| snap.result.is_some()));
+    let natural = combat.snapshot().result.unwrap();
+    assert_eq!(combat.stop(), natural);
 }

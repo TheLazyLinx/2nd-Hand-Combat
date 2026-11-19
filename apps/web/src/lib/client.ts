@@ -102,6 +102,9 @@ export class BattleClient {
   resume() {
     this.send({ type: 'resume', battleId: this.battleId });
   }
+  stop() {
+    this.send({ type: 'stop', battleId: this.battleId });
+  }
 
   reset() {
     this.send({ type: 'reset', battleId: ++this.battleId });

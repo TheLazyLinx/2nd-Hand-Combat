@@ -54,4 +54,8 @@ impl WasmBattle {
     pub fn snapshot_json(&self) -> Result<String, JsValue> {
         serde_json::to_string(&self.battle.snapshot()).map_err(js_error)
     }
+
+    pub fn stop(&mut self) {
+        self.battle.stop();
+    }
 }

@@ -162,6 +162,25 @@ fn fallback_threshold_increases_fallback_and_defending_share_across_seeds() {
 }
 
 #[test]
+fn fire_while_moving_increases_shots_while_advancing_across_seeds() {
+    let on = run_scenario(&scenario("fire_on_move_on"), DEFAULT_SEEDS);
+    let off = run_scenario(&scenario("fire_on_move_off"), DEFAULT_SEEDS);
+    let more_shots = on
+        .runs
+        .iter()
+        .zip(&off.runs)
+        .filter(|(a, b)| a.faction(0).shots_fired > b.faction(0).shots_fired)
+        .count();
+    assert!(
+        more_shots * 10 >= DEFAULT_SEEDS.len() * 8,
+        "expected fire_on_move_on to fire more shots than fire_on_move_off in >= 80% of seeds, got {more_shots}/{} (mean {:.1} vs {:.1})",
+        DEFAULT_SEEDS.len(),
+        on.mean_shots_f0,
+        off.mean_shots_f0
+    );
+}
+
+#[test]
 fn standard_doctrine_outcome_fingerprints_match_baseline() {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("fingerprints.json");
     let expected = load_fingerprints(&path).unwrap_or_else(|e| {

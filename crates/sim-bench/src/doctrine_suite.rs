@@ -287,6 +287,34 @@ fn fallback_none(seed: u32) -> Scenario {
     fallback_scenario(seed, 0.0)
 }
 
+fn fire_on_move_scenario(seed: u32, fire_while_moving: bool) -> Scenario {
+    let mut d0 = base_doctrine();
+    d0.engagement_distance = 3.0;
+    d0.fire_while_moving = fire_while_moving;
+    let mut d1 = base_doctrine();
+    d1.engagement_distance = 12.0;
+    Scenario {
+        map: ArenaMap::flat(18, 10),
+        seed,
+        factions: default_factions(),
+        loadouts: vec![],
+        units: vec![
+            place(1, 0, 2.5, 4.5, d0.clone()),
+            place(2, 0, 2.5, 5.5, d0),
+            place(3, 1, 13.5, 4.5, d1.clone()),
+            place(4, 1, 13.5, 5.5, d1),
+        ],
+        time_limit: Some(60.0),
+    }
+}
+
+fn fire_on_move_on(seed: u32) -> Scenario {
+    fire_on_move_scenario(seed, true)
+}
+fn fire_on_move_off(seed: u32) -> Scenario {
+    fire_on_move_scenario(seed, false)
+}
+
 pub fn standard_scenarios() -> Vec<StandardScenario> {
     vec![
         StandardScenario {
@@ -366,6 +394,18 @@ pub fn standard_scenarios() -> Vec<StandardScenario> {
             group: "fallback",
             description: "2v2 near walls, F0 fallback_hp=0%",
             build: fallback_none,
+        },
+        StandardScenario {
+            name: "fire_on_move_on",
+            group: "fire_on_move",
+            description: "2v2 assault closing to 3m, F0 fire_while_moving=true",
+            build: fire_on_move_on,
+        },
+        StandardScenario {
+            name: "fire_on_move_off",
+            group: "fire_on_move",
+            description: "2v2 assault closing to 3m, F0 fire_while_moving=false",
+            build: fire_on_move_off,
         },
     ]
 }

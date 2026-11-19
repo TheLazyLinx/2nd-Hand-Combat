@@ -13,9 +13,11 @@
   <p>
     {result.reason === 'timeout'
       ? 'Time limit reached'
-      : result.reason === 'simultaneous_elimination'
-        ? 'All sides eliminated'
-        : 'Opposing forces eliminated'} &middot; {result.elapsed.toFixed(1)} seconds
+      : result.reason === 'stopped'
+        ? 'Battle ended early'
+        : result.reason === 'simultaneous_elimination'
+          ? 'All sides eliminated'
+          : 'Opposing forces eliminated'} &middot; {result.elapsed.toFixed(1)} seconds
   </p>
   <div class="result-grid">
     {#each result.factions as entry (entry.faction)}

@@ -27,8 +27,28 @@ pub(crate) enum Action {
         entry_id: u32,
         target_idx: usize,
         exposure: f64,
+        moving_multiplier: f64,
         weapon: &'static WeaponSpec,
     },
+}
+
+#[inline]
+fn is_moving_behavior(behavior: &Behavior) -> bool {
+    matches!(
+        behavior,
+        Behavior::Advancing | Behavior::FallingBack | Behavior::Investigating
+    )
+}
+
+#[inline]
+fn can_attack(unit: &Unit) -> bool {
+    match unit.combat.behavior {
+        Behavior::Engaging | Behavior::Defending => true,
+        Behavior::Advancing | Behavior::FallingBack | Behavior::Investigating => {
+            unit.placement.doctrine.fire_while_moving
+        }
+        Behavior::Searching | Behavior::Dead => false,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -110,7 +130,7 @@ fn propose_ration(ctx: &ActionContext<'_>) -> Option<ActionProposal> {
 
 fn propose_grenade(ctx: &ActionContext<'_>) -> Option<ActionProposal> {
     let u = ctx.unit;
-    if !u.combat.attack_ready() {
+    if !can_attack(u) || !u.combat.attack_ready() {
         return None;
     }
     let grenade = &u.placement.doctrine.grenades;
@@ -156,16 +176,15 @@ fn propose_grenade(ctx: &ActionContext<'_>) -> Option<ActionProposal> {
 
 fn propose_fire(ctx: &ActionContext<'_>) -> Option<ActionProposal> {
     let u = ctx.unit;
+    if !can_attack(u) {
+        return None;
+    }
     let (entry_id, weapon_id) = u.inventory.held_weapon_entry()?;
     if !u.combat.weapon_ready(entry_id) {
         return None;
     }
     let weapon = weapon_spec(weapon_id);
-    if !matches!(
-        u.combat.behavior,
-        Behavior::Engaging | Behavior::FallingBack | Behavior::Defending
-    ) || u.inventory.count_item(weapon.ammo_item) == 0
-    {
+    if u.inventory.count_item(weapon.ammo_item) == 0 {
         return None;
     }
     let j = ctx.observed.first().copied()?;
@@ -178,12 +197,18 @@ fn propose_fire(ctx: &ActionContext<'_>) -> Option<ActionProposal> {
         ctx.units[j].nav.position,
         ctx.tick < ctx.units[j].combat.revealed_until,
     );
+    let moving_multiplier = if is_moving_behavior(&u.combat.behavior) {
+        weapon.moving_fire_multiplier * u.def.moving_fire_multiplier
+    } else {
+        1.0
+    };
     (exposure > 0.0).then_some(ActionProposal {
         priority: ActionPriority::Fire,
         action: Action::Fire {
             entry_id,
             target_idx: j,
             exposure,
+            moving_multiplier,
             weapon,
         },
     })
