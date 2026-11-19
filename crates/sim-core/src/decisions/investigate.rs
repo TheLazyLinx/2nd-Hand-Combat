@@ -15,7 +15,7 @@ pub(crate) fn propose(
     scratch: &mut SearchScratch,
 ) -> InvestigateOutcome {
     let me = ctx.input.unit;
-    let Some(memory) = &me.perception.memory else {
+    let Some(memory) = me.perception.primary() else {
         return InvestigateOutcome::None;
     };
     if memory.investigated {

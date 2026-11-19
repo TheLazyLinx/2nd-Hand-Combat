@@ -111,7 +111,7 @@ pub fn fingerprint_snapshot(snapshot: &Snapshot) -> u64 {
             }
             None => h = fnv1a_update(h, &[0]),
         }
-        h = fnv1a_update(h, res.reason.as_bytes());
+        h = fnv1a_update(h, res.reason.as_str().as_bytes());
     } else {
         h = fnv1a_update(h, &[0]);
     }
@@ -225,7 +225,7 @@ pub fn run_battle_metrics(scenario: Scenario, max_ticks: u32) -> RunMetrics {
     }
 
     let (winner, reason) = match &final_snap.result {
-        Some(res) => (res.winner, res.reason.clone()),
+        Some(res) => (res.winner, res.reason.as_str().to_owned()),
         None => (None, "unfinished".into()),
     };
     RunMetrics {

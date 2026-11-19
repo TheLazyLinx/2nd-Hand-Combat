@@ -19,38 +19,6 @@ pub(crate) const ITEM_MEDICAL_SUPPLY: ItemId = ItemId(4);
 pub(crate) const ITEM_RATION: ItemId = ItemId(5);
 pub(crate) const ITEM_WATER: ItemId = ItemId(6);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ItemCategory {
-    Weapon,
-    Ammo,
-    Grenade,
-    Tool,
-    Medical,
-    Ration,
-    Water,
-}
-
-impl ItemCategory {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Weapon => "weapon",
-            Self::Ammo => "ammo",
-            Self::Grenade => "grenade",
-            Self::Tool => "tool",
-            Self::Medical => "medical",
-            Self::Ration => "ration",
-            Self::Water => "water",
-        }
-    }
-
-    pub(crate) const fn consumable(self) -> bool {
-        matches!(
-            self,
-            Self::Ammo | Self::Grenade | Self::Medical | Self::Ration | Self::Water
-        )
-    }
-}
-
 pub(crate) struct ItemSpec {
     pub id: &'static str,
     pub name: &'static str,
@@ -146,7 +114,7 @@ pub(crate) fn items() -> Vec<ItemDefinition> {
         .map(|d| ItemDefinition {
             id: d.id.into(),
             name: d.name.into(),
-            category: d.category.as_str().into(),
+            category: d.category,
             mass_grams: d.mass,
             volume_ml: d.volume,
             hands_required: d.hands,
@@ -401,8 +369,7 @@ impl Inventory {
         self.entries
             .iter()
             .filter(|e| e.item == item)
-            .map(|e| e.quantity)
-            .sum()
+            .fold(0u32, |acc, e| acc.saturating_add(e.quantity))
     }
 
     pub(crate) fn weapon_entries(&self) -> Vec<(u32, WeaponId)> {
@@ -528,9 +495,17 @@ impl Inventory {
         if let Some(used) = self.uses.iter().find(|used| used.item == item_id) {
             used.count.checked_add(1).ok_or(InventoryError::Overflow)?;
         }
+        let next_weight = self
+            .weight_grams
+            .checked_sub(item.mass)
+            .ok_or(InventoryError::Overflow)?;
+        let next_volume = self
+            .stowed_volume_ml
+            .checked_sub(item.volume)
+            .ok_or(InventoryError::Overflow)?;
         self.entries[idx].quantity -= 1;
-        self.weight_grams -= item.mass;
-        self.stowed_volume_ml -= item.volume;
+        self.weight_grams = next_weight;
+        self.stowed_volume_ml = next_volume;
         self.load_factor = compute_load_factor(
             self.weight_grams,
             self.stowed_volume_ml,
@@ -963,5 +938,49 @@ mod tests {
             .err(),
             Some(InventoryError::DuplicateItem)
         );
+    }
+
+    #[test]
+    fn can_use_and_totals_handle_overflow_and_corrupted_hands_without_panicking() {
+        let mut inv = Inventory::default_infantry();
+        // Volume sum overflow in can_use_item returns false instead of panicking.
+        inv.stowed_volume_ml = u32::MAX;
+        assert!(!inv.can_use("water"));
+
+        // Broken hand reference returns false instead of panicking.
+        let mut broken_hand = Inventory::default_infantry();
+        broken_hand.left = Some(999);
+        assert!(!broken_hand.can_use("water"));
+        assert_eq!(broken_hand.totals(), Err(InventoryError::InvalidHands));
+
+        // Exhausted split ID space prevents splitting multi-item stacks without panicking.
+        let mut max_id = from_parts(
+            vec![entry(u32::MAX, "water", 2)],
+            None,
+            None,
+            10_000,
+            10_000,
+        )
+        .unwrap();
+        assert!(!max_id.can_use("water"));
+        assert_eq!(max_id.use_item("water"), Err(InventoryError::Overflow));
+
+        // Overflowing use counter returns false/Overflow instead of panicking.
+        let mut max_uses = Inventory::default_infantry();
+        max_uses.uses.push(UseRecord {
+            item: ITEM_RIFLE_AMMO,
+            count: u32::MAX,
+        });
+        assert!(!max_uses.can_use("rifle-ammo"));
+        assert_eq!(
+            max_uses.consume("rifle-ammo"),
+            Err(InventoryError::Overflow)
+        );
+
+        // Weight addition overflow across two entries returns Err(Overflow).
+        let mut overflow_sum =
+            from_parts(vec![entry(1, "water", 1)], None, None, 1000, 1000).unwrap();
+        overflow_sum.entries = vec![entry(1, "rifle", 600_000), entry(2, "rifle", 600_000)];
+        assert_eq!(overflow_sum.totals(), Err(InventoryError::Overflow));
     }
 }

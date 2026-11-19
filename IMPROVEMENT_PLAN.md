@@ -240,13 +240,13 @@ Every scenario now beats all [ADR 0001](docs/decisions/0001-performance-targets.
 
 ## Phase 5 — Code health and typed contracts
 
-- [ ] Replace stringly-typed fields with enums (preserving clean wire values via serde): `ResultReason`, `IssueSeverity`, `IssueCode`, `ItemCategory`, `ItemUseKind`. Remove the error-message string match in [validation.rs](crates/sim-core/src/validation.rs) (`issue.message == "Patrol points must be on open ground."`).
-- [ ] Move inventory doctrine range checks in [validation.rs](crates/sim-core/src/validation.rs) out of `structural_problem` into regular validation/analysis issues so drafts with out-of-range grenade/medical settings remain editable in Map Maker instead of being rejected as structurally unsafe.
-- [ ] Replace `.expect(...)` overflow/invariant panics in `Inventory::can_use` and `Inventory::totals` with explicit error/boolean handling ([AGENTS.md](AGENTS.md) rule 12).
-- [ ] Serialize `Behavior` as stable camelCase IDs (`fallingBack`) and map display labels in TypeScript.
-- [ ] Consolidate unit memory (`memory`, `threat_memories`, derived `known_threats`) into one source of truth.
-- [ ] Move weapon cooldown ticking out of `movement::execute` into combat/item execution.
-- [ ] Decide whether `Catalog.terrain_cells` is still needed now that `analyze_scenario` supplies cell info; remove if unused.
+- [x] Replace stringly-typed fields with enums (preserving clean wire values via serde): `ResultReason`, `IssueSeverity`, `IssueCode`, `ItemCategory`, `ItemUseKind`. Remove the error-message string match in [validation.rs](crates/sim-core/src/validation.rs) (`issue.message == "Patrol points must be on open ground."`).
+- [x] Move inventory doctrine range checks in [validation.rs](crates/sim-core/src/validation.rs) out of `structural_problem` into regular validation/analysis issues so drafts with out-of-range grenade/medical settings remain editable in Map Maker instead of being rejected as structurally unsafe.
+- [x] Replace `.expect(...)` overflow/invariant panics in `Inventory::can_use` and `Inventory::totals` with explicit error/boolean handling ([AGENTS.md](AGENTS.md) rule 12).
+- [x] Serialize `Behavior` as stable camelCase IDs (`fallingBack`) and map display labels in TypeScript.
+- [x] Consolidate unit memory (`memory`, `threat_memories`, derived `known_threats`) into one source of truth.
+- [x] Move weapon cooldown ticking out of `movement::execute` into combat/item execution.
+- [x] Decide whether `Catalog.terrain_cells` is still needed now that `analyze_scenario` supplies cell info; remove if unused.
 
 ---
 

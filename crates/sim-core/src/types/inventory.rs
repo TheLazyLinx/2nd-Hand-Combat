@@ -31,13 +31,35 @@ pub struct WeaponDefinition {
     pub moving_fire_multiplier: f64,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS), ts(rename_all = "camelCase"))]
+#[serde(rename_all = "camelCase")]
+pub enum ItemCategory {
+    Weapon,
+    Ammo,
+    Grenade,
+    Tool,
+    Medical,
+    Ration,
+    Water,
+}
+
+impl ItemCategory {
+    pub const fn consumable(self) -> bool {
+        matches!(
+            self,
+            Self::Ammo | Self::Grenade | Self::Medical | Self::Ration | Self::Water
+        )
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS), ts(rename_all = "camelCase"))]
 #[serde(rename_all = "camelCase")]
 pub struct ItemDefinition {
     pub id: String,
     pub name: String,
-    pub category: String,
+    pub category: ItemCategory,
     pub mass_grams: u32,
     pub volume_ml: u32,
     pub hands_required: u32,
@@ -115,11 +137,21 @@ pub enum UnitLoadout {
     Inline { entries: Vec<LoadoutEntry> },
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS), ts(rename_all = "camelCase"))]
+#[serde(rename_all = "camelCase")]
+pub enum ItemUseKind {
+    Grenade,
+    Medical,
+    Ration,
+    Water,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS), ts(rename_all = "camelCase"))]
 #[serde(rename_all = "camelCase")]
 pub struct ItemUseProperties {
-    pub kind: String,
+    pub kind: ItemUseKind,
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts-export", ts(optional))]
     pub blast_radius: Option<f64>,
@@ -138,4 +170,18 @@ pub struct ItemUseProperties {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[cfg_attr(feature = "ts-export", ts(optional))]
     pub use_threshold: Option<f64>,
+}
+
+impl ItemUseProperties {
+    pub const fn new(kind: ItemUseKind) -> Self {
+        Self {
+            kind,
+            blast_radius: None,
+            damage: None,
+            cooldown_seconds: None,
+            heal_amount: None,
+            restore_amount: None,
+            use_threshold: None,
+        }
+    }
 }

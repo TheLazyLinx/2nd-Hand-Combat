@@ -48,11 +48,11 @@ pub(crate) fn evaluate(scenario: &Scenario, units: &[Unit], tick: u32) -> Option
     });
     let elapsed = tick as f64 * crate::definitions::STEP;
     let reason = if surviving_factions.is_empty() {
-        Some("simultaneous_elimination")
+        Some(ResultReason::SimultaneousElimination)
     } else if !hostile_pair_alive {
-        Some("elimination")
+        Some(ResultReason::Elimination)
     } else if scenario.time_limit.is_some_and(|limit| elapsed >= limit) {
-        Some("timeout")
+        Some(ResultReason::Timeout)
     } else {
         None
     };
@@ -64,18 +64,18 @@ pub(crate) fn evaluate(scenario: &Scenario, units: &[Unit], tick: u32) -> Option
     };
     Some(BattleResult {
         winner,
-        reason: reason.into(),
+        reason,
         elapsed,
         factions,
     })
 }
 
-/// Immediately concludes an active battle as a draw with `reason: "stopped"`.
+/// Immediately concludes an active battle as a draw with `reason: ResultReason::Stopped`.
 pub(crate) fn stopped(scenario: &Scenario, units: &[Unit], tick: u32) -> BattleResult {
     let (_, factions) = faction_results(scenario, units);
     BattleResult {
         winner: None,
-        reason: "stopped".into(),
+        reason: ResultReason::Stopped,
         elapsed: tick as f64 * crate::definitions::STEP,
         factions,
     }

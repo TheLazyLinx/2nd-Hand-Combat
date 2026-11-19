@@ -752,7 +752,7 @@ test('toggling fire while moving changes shots fired while advancing in real WAS
       .received.filter((m) => m.type === 'snapshot' && m.battleId === 1)
       .map((m) => (m.type === 'snapshot' ? m.snapshot : null))
       .filter((s): s is NonNullable<typeof s> => s !== null);
-    const lastAdvancing = snaps.findLast((s) => s.units[0].behavior === 'Advancing');
+    const lastAdvancing = snaps.findLast((s) => s.units[0].behavior === 'advancing');
     return lastAdvancing?.units[0].shotsFired ?? 0;
   });
   expect(offShotsWhileAdvancing).toBe(0);
@@ -765,6 +765,7 @@ test('toggling fire while moving changes shots fired while advancing in real WAS
   await page.getByTestId('fire-while-moving').check();
   await expect(page.getByTestId('fire-while-moving')).toBeChecked();
   await page.getByTestId('start-battle').click();
+  await expect(page.getByTestId('faction-0')).toContainText(/Advancing|Engaging/);
   await expect
     .poll(
       () =>
@@ -775,7 +776,7 @@ test('toggling fire while moving changes shots fired while advancing in real WAS
               (m) =>
                 m.type === 'snapshot' &&
                 m.battleId === 3 &&
-                m.snapshot.units[0].behavior === 'Advancing' &&
+                m.snapshot.units[0].behavior === 'advancing' &&
                 m.snapshot.units[0].shotsFired > 0,
             ),
         ),

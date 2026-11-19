@@ -3,26 +3,21 @@
 //!
 //! Invariant: unit definitions and starting loadouts are resolved once at construction into
 //! static `&'static UnitSpec`, compact `WeaponId` slots, and typed `Inventory` entries.
+//! `PerceptionMemory` stores one canonical sorted `threats` list plus `primary_id`.
 
 use crate::{
-    definitions::{unit_spec, UnitSpec, WeaponId},
+    definitions::{unit_spec, UnitSpec, WeaponId, TUNING},
     inventory::Inventory,
     navigation::Route,
     types::*,
 };
 
-#[derive(Clone)]
-pub(crate) struct Memory {
-    pub position: Point,
-    pub tick: u32,
-    pub investigated: bool,
-}
-
-#[derive(Clone)]
+#[derive(Clone, Copy, Debug)]
 pub(crate) struct ThreatMemory {
     pub id: u32,
     pub position: Point,
     pub tick: u32,
+    pub investigated: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -45,10 +40,97 @@ pub(crate) struct NavigationState {
 #[derive(Clone, Default)]
 pub(crate) struct PerceptionMemory {
     pub target: Option<u32>,
-    pub memory: Option<Memory>,
-    pub known_threats: Vec<Point>,
-    pub threat_memories: Vec<ThreatMemory>,
+    primary_id: Option<u32>,
+    threats: Vec<ThreatMemory>,
     pub last_contact: u32,
+}
+
+impl PerceptionMemory {
+    /// Updates remembered threats from current-tick observations, expires stale entries,
+    /// and updates `target`, `primary_id`, and `last_contact`.
+    /// Returns `true` when the primary visible target changed.
+    pub(crate) fn update_observations(&mut self, tick: u32, contacts: &[(u32, Point)]) -> bool {
+        if !contacts.is_empty() {
+            self.last_contact = tick;
+        }
+        let previous_target = self.target;
+        self.threats
+            .retain(|memory| tick - memory.tick <= TUNING.memory_expiry_ticks);
+        for &(id, position) in contacts {
+            if let Some(memory) = self.threats.iter_mut().find(|memory| memory.id == id) {
+                memory.position = position;
+                memory.tick = tick;
+                memory.investigated = false;
+            } else {
+                self.threats.push(ThreatMemory {
+                    id,
+                    position,
+                    tick,
+                    investigated: false,
+                });
+            }
+        }
+        self.threats.sort_by_key(|memory| memory.id);
+        if let Some(&(id, _)) = contacts.first() {
+            self.target = Some(id);
+            self.primary_id = Some(id);
+            previous_target != Some(id)
+        } else {
+            self.target = None;
+            if self
+                .primary_id
+                .is_some_and(|id| !self.threats.iter().any(|memory| memory.id == id))
+            {
+                self.primary_id = None;
+            }
+            previous_target.is_some()
+        }
+    }
+
+    pub(crate) fn primary(&self) -> Option<&ThreatMemory> {
+        let id = self.primary_id?;
+        self.threats.iter().find(|memory| memory.id == id)
+    }
+
+    pub(crate) fn mark_primary_investigated(&mut self) {
+        if let Some(id) = self.primary_id {
+            if let Some(memory) = self.threats.iter_mut().find(|memory| memory.id == id) {
+                memory.investigated = true;
+            }
+        }
+    }
+
+    pub(crate) fn fill_threat_positions(&self, out: &mut Vec<Point>) {
+        out.clear();
+        out.extend(self.threats.iter().map(|memory| memory.position));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn threats(&self) -> &[ThreatMemory] {
+        &self.threats
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remember_for_test(&mut self, position: Point, tick: u32) {
+        const SYNTHETIC_ID: u32 = u32::MAX;
+        if let Some(memory) = self
+            .threats
+            .iter_mut()
+            .find(|memory| memory.id == SYNTHETIC_ID)
+        {
+            memory.position = position;
+            memory.tick = tick;
+            memory.investigated = false;
+        } else {
+            self.threats.push(ThreatMemory {
+                id: SYNTHETIC_ID,
+                position,
+                tick,
+                investigated: false,
+            });
+        }
+        self.primary_id = Some(SYNTHETIC_ID);
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -3,14 +3,13 @@ use serde::{Deserialize, Serialize};
 use super::{InventorySnapshot, Point, Surface, Sustainment};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-#[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS), ts(rename_all = "camelCase"))]
+#[serde(rename_all = "camelCase")]
 pub enum Behavior {
     Searching,
     Investigating,
     Advancing,
     Engaging,
-    #[serde(rename = "Falling back")]
-    #[cfg_attr(feature = "ts-export", ts(rename = "Falling back"))]
     FallingBack,
     Defending,
     Dead,
@@ -52,11 +51,36 @@ pub struct FactionResult {
     pub casualties: u32,
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(
+    feature = "ts-export",
+    derive(ts_rs::TS),
+    ts(rename_all = "snake_case")
+)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultReason {
+    Elimination,
+    SimultaneousElimination,
+    Timeout,
+    Stopped,
+}
+
+impl ResultReason {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Elimination => "elimination",
+            Self::SimultaneousElimination => "simultaneous_elimination",
+            Self::Timeout => "timeout",
+            Self::Stopped => "stopped",
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS))]
 pub struct BattleResult {
     pub winner: Option<u32>,
-    pub reason: String,
+    pub reason: ResultReason,
     pub elapsed: f64,
     pub factions: Vec<FactionResult>,
 }

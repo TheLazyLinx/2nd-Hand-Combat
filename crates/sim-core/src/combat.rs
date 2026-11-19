@@ -45,6 +45,11 @@ pub(crate) fn execute_with_context<T: StepTimer>(
         }
     }
     timer.mark_post_perception();
+    for u in units.iter_mut() {
+        if u.vitals.hp > 0.0 {
+            u.combat.tick_cooldowns();
+        }
+    }
     let actions = crate::item_actions::select(units, terrain, tick, observations);
     timer.mark_item_actions();
     let mut damage = vec![0.0; units.len()];
@@ -52,46 +57,60 @@ pub(crate) fn execute_with_context<T: StepTimer>(
     for (i, action) in actions.into_iter().enumerate() {
         match action {
             Some(Action::Medical(item)) => {
-                units[i]
-                    .inventory
-                    .use_item_by_id(item)
-                    .expect("selected item remains usable");
-                units[i].combat.last_medical = Some(tick);
-                heals[i] = true;
+                let applied = units[i].inventory.use_item_by_id(item);
+                debug_assert!(
+                    applied.is_ok(),
+                    "selected medical item should remain usable: {applied:?}"
+                );
+                if applied.is_ok() {
+                    units[i].combat.last_medical = Some(tick);
+                    heals[i] = true;
+                }
             }
             Some(Action::Water(item)) => {
-                units[i]
-                    .inventory
-                    .use_item_by_id(item)
-                    .expect("selected item remains usable");
-                units[i].sustainment.hydration =
-                    (units[i].sustainment.hydration + crate::consumables::NEED_RESTORE).min(100.0);
+                let applied = units[i].inventory.use_item_by_id(item);
+                debug_assert!(
+                    applied.is_ok(),
+                    "selected water item should remain usable: {applied:?}"
+                );
+                if applied.is_ok() {
+                    units[i].sustainment.hydration = (units[i].sustainment.hydration
+                        + crate::consumables::NEED_RESTORE)
+                        .min(100.0);
+                }
             }
             Some(Action::Ration(item)) => {
-                units[i]
-                    .inventory
-                    .use_item_by_id(item)
-                    .expect("selected item remains usable");
-                units[i].sustainment.nutrition =
-                    (units[i].sustainment.nutrition + crate::consumables::NEED_RESTORE).min(100.0);
+                let applied = units[i].inventory.use_item_by_id(item);
+                debug_assert!(
+                    applied.is_ok(),
+                    "selected ration item should remain usable: {applied:?}"
+                );
+                if applied.is_ok() {
+                    units[i].sustainment.nutrition = (units[i].sustainment.nutrition
+                        + crate::consumables::NEED_RESTORE)
+                        .min(100.0);
+                }
             }
             Some(Action::Grenade { item, target_idx }) => {
                 let target = units[target_idx].nav.position;
-                units[i]
-                    .inventory
-                    .use_item_by_id(item)
-                    .expect("selected item remains usable");
-                units[i].combat.set_attack_cooldown(
-                    (crate::consumables::GRENADE_COOLDOWN_SECONDS / crate::definitions::STEP)
-                        as u32,
+                let applied = units[i].inventory.use_item_by_id(item);
+                debug_assert!(
+                    applied.is_ok(),
+                    "selected grenade item should remain usable: {applied:?}"
                 );
-                units[i].combat.revealed_until = tick + crate::definitions::REVEAL_TICKS;
-                for (k, v) in units.iter().enumerate() {
-                    if v.vitals.hp > 0.0
-                        && v.nav.position.distance(target) <= crate::consumables::BLAST_RADIUS
-                        && map::visible_t(terrain, target, v.nav.position, 0.1, 1.0)
-                    {
-                        damage[k] += crate::consumables::GRENADE_DAMAGE;
+                if applied.is_ok() {
+                    units[i].combat.set_attack_cooldown(
+                        (crate::consumables::GRENADE_COOLDOWN_SECONDS / crate::definitions::STEP)
+                            as u32,
+                    );
+                    units[i].combat.revealed_until = tick + crate::definitions::REVEAL_TICKS;
+                    for (k, v) in units.iter().enumerate() {
+                        if v.vitals.hp > 0.0
+                            && v.nav.position.distance(target) <= crate::consumables::BLAST_RADIUS
+                            && map::visible_t(terrain, target, v.nav.position, 0.1, 1.0)
+                        {
+                            damage[k] += crate::consumables::GRENADE_DAMAGE;
+                        }
                     }
                 }
             }
@@ -102,25 +121,28 @@ pub(crate) fn execute_with_context<T: StepTimer>(
                 moving_multiplier,
                 weapon,
             }) => {
-                units[i]
-                    .inventory
-                    .consume_item(weapon.ammo_item)
-                    .expect("selected ammunition remains available");
-                if units[i].inventory.count_item(weapon.ammo_item) == 0 {
-                    units[i].needs_decision = true;
-                }
-                units[i].combat.shots += 1;
-                units[i].combat.set_weapon_cooldown(
-                    entry_id,
-                    (weapon.cooldown / crate::definitions::STEP) as u32,
+                let applied = units[i].inventory.consume_item(weapon.ammo_item);
+                debug_assert!(
+                    applied.is_ok(),
+                    "selected ammunition should remain available: {applied:?}"
                 );
-                units[i].combat.revealed_until = tick + crate::definitions::REVEAL_TICKS;
-                *rng ^= *rng << 13;
-                *rng ^= *rng >> 7;
-                *rng ^= *rng << 17;
-                let roll = (*rng >> 11) as f64 / ((1_u64 << 53) as f64);
-                if roll < weapon.hit_chance * exposure * moving_multiplier {
-                    damage[target_idx] += weapon.damage;
+                if applied.is_ok() {
+                    if units[i].inventory.count_item(weapon.ammo_item) == 0 {
+                        units[i].needs_decision = true;
+                    }
+                    units[i].combat.shots += 1;
+                    units[i].combat.set_weapon_cooldown(
+                        entry_id,
+                        (weapon.cooldown / crate::definitions::STEP) as u32,
+                    );
+                    units[i].combat.revealed_until = tick + crate::definitions::REVEAL_TICKS;
+                    *rng ^= *rng << 13;
+                    *rng ^= *rng >> 7;
+                    *rng ^= *rng << 17;
+                    let roll = (*rng >> 11) as f64 / ((1_u64 << 53) as f64);
+                    if roll < weapon.hit_chance * exposure * moving_multiplier {
+                        damage[target_idx] += weapon.damage;
+                    }
                 }
             }
             None => {}
@@ -448,5 +470,20 @@ mod tests {
                 "{behavior:?} on should allow rifle fire"
             );
         }
+    }
+
+    #[test]
+    fn combat_ticks_cooldowns_independently_of_movement() {
+        let map = ArenaMap::flat(16, 6);
+        let mut units = vec![soldier(1, 2.5), soldier(2, 6.5)];
+        units[0].placement.doctrine.grenades.policy = GrenadePolicy::Never;
+        units[0].combat.set_attack_cooldown(2);
+        units[1].combat.set_attack_cooldown(10);
+        let mut rng = 2;
+        execute(&mut units, &map, &mut rng, 1);
+        assert_eq!(units[0].combat.shots, 0);
+        assert_eq!(units[0].combat.action_cooldown, 1);
+        execute(&mut units, &map, &mut rng, 2);
+        assert_eq!(units[0].combat.shots, 1);
     }
 }
