@@ -1,10 +1,11 @@
 ﻿<script lang="ts">
+  import { frameUnitSummary, type LiveFrame } from '../lib/compact-snapshot';
   import { behaviorLabel, factionColorHex, unitDefinition } from '../lib/factions';
-  import type { Catalog, FactionDefinition, Scenario, Snapshot } from '../lib/types';
+  import type { Catalog, FactionDefinition, Scenario } from '../lib/types';
   export let faction: FactionDefinition;
   export let side: number;
   export let scenario: Scenario | null;
-  export let snapshot: Snapshot | null;
+  export let snapshot: LiveFrame | null;
   export let catalog: Catalog | null;
   export let selected: number | null;
   export let editable: boolean;
@@ -28,7 +29,7 @@
   </div>
   {#each roster as unit (unit.id)}
     {@const unitDef = catalog ? unitDefinition(catalog, unit.definitionId) : null}
-    {@const live = snapshot?.units.find((u) => u.id === unit.id)}
+    {@const live = frameUnitSummary(snapshot, unit.id)}
     <button
       class:active={selected === unit.id}
       class="roster-unit"

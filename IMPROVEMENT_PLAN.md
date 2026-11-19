@@ -254,11 +254,11 @@ Every scenario now beats all [ADR 0001](docs/decisions/0001-performance-targets.
 
 Begin only after Phases 1–2 and after measuring 100 / 1,000 / 5,000 units with `sim-bench`.
 
-- [ ] Uniform spatial grid for units, updated each tick; perception and grenade blast queries inspect only cells within range.
-- [ ] Compact snapshot transport: binary typed arrays (transferable) for high-frequency unit state (position, HP, behaviour, target) once unit counts grow; send detailed inventory/sustainment data only on change or for the inspected unit rather than serializing every soldier's full inventory JSON at 10 Hz.
-- [ ] Worker: build snapshots only when publishing (currently built and JSON-parsed on every pump), and emit a "simulation behind real time" indicator to the UI instead of silently slowing at the 5-step catch-up cap.
-- [ ] Renderer: sprite batching and viewport culling when unit counts require it.
-- [ ] Re-evaluate storage layout (packed component arrays vs ECS) against profiling data ([ARCHITECTURE.md](ARCHITECTURE.md) leaves this open).
+- [x] Uniform spatial grid for units, updated each tick; perception and grenade blast queries inspect only cells within range.
+- [x] Compact snapshot transport: binary typed arrays (transferable) for high-frequency unit state (position, HP, behaviour, target) once unit counts grow; send detailed inventory/sustainment data only on change or for the inspected unit rather than serializing every soldier's full inventory JSON at 10 Hz.
+- [x] Worker: build snapshots only when publishing (currently built and JSON-parsed on every pump), and emit a "simulation behind real time" indicator to the UI instead of silently slowing at the 5-step catch-up cap.
+- [x] Renderer: sprite batching and viewport culling when unit counts require it.
+- [x] Re-evaluate storage layout (packed component arrays vs ECS) against profiling data ([ARCHITECTURE.md](ARCHITECTURE.md) leaves this open — recorded in [ADR 0008](docs/decisions/0008-scaling-spatial-grid-and-storage-layout.md)).
 
 ---
 
@@ -315,5 +315,6 @@ Notes for parallel work:
 | 6 | CI | Add GitHub Actions `verify.yml` alongside existing `privacy.yml` | 0A |
 | 7 | New dev dependencies | Approved: `ts-rs` or `specta`, Prettier + ESLint + `prettier-plugin-svelte`, `cargo-deny` | 0A, 0B |
 | 8 | Human approval checkpoints | Approved: new deps, schema version bump, doctrine meaning / fingerprint change, loosened/deleted tests, scope docs, new assets | 0D |
+| 9 | Storage layout (`Vec<Unit>` vs ECS) | Keep componentized `Vec<Unit>` + packed 32-byte `SpatialEntry` CSR grid; no ECS crate ([ADR 0008](docs/decisions/0008-scaling-spatial-grid-and-storage-layout.md)) | 6 |
 
 Still open: which machine serves as the reference "mid-range laptop" for browser measurements, and mobile targets.

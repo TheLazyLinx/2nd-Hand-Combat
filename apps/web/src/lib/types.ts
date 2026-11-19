@@ -6,6 +6,7 @@ import type {
   Scenario,
   ScenarioAnalysis,
   Snapshot,
+  UnitInventoryUpdate,
   Validation,
 } from '../generated/sim-types';
 
@@ -23,7 +24,8 @@ export type WorkerCommand =
   | { type: 'initialize' }
   | { type: 'analyze'; requestId: number; revision: number; scenario: Scenario }
   | { type: 'validate'; requestId: number; scenario: Scenario; forStart: boolean }
-  | { type: 'start'; battleId: number; scenario: Scenario }
+  | { type: 'start'; battleId: number; scenario: Scenario; compact?: boolean }
+  | { type: 'inspect'; battleId: number; unitId: number | null }
   | { type: 'pause' | 'resume' | 'stop' | 'reset'; battleId: number };
 
 export type WorkerReply =
@@ -31,6 +33,18 @@ export type WorkerReply =
   | { type: 'analysis'; requestId: number; revision: number; analysis: ScenarioAnalysis }
   | { type: 'validation'; requestId: number; validation: Validation }
   | { type: 'snapshot'; battleId: number; snapshot: Snapshot }
+  | {
+      type: 'compactSnapshot';
+      battleId: number;
+      tick: number;
+      elapsed: number;
+      unitCount: number;
+      buffer: ArrayBuffer;
+      result: BattleResult | null;
+      inspectedInventory: UnitInventoryUpdate | null;
+    }
+  | { type: 'unitInventory'; battleId: number; update: UnitInventoryUpdate }
+  | { type: 'performance'; battleId: number; behindRealTime: boolean }
   | { type: 'state'; battleId: number; state: 'running' | 'paused' | 'setup' }
   | { type: 'result'; battleId: number; result: BattleResult }
   | { type: 'error'; battleId?: number; requestId?: number; message: string };

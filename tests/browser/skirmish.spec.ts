@@ -820,3 +820,183 @@ test('time limit defaults to 10 minutes, supports no time limit, and End battle 
   await expect(page.getByTestId('battle-status')).toHaveText('SETUP');
   await expect(page.getByTestId('no-time-limit')).toBeChecked();
 });
+
+test('compact binary snapshot transport streams transferable buffers and on-demand unit inventory for large battles', async ({
+  page,
+}) => {
+  await openSkirmish(page);
+  const summary = await page.evaluate(async () => {
+    const { worker, received } = window.observedWorkers.at(-1)!;
+    const ready = received.find((m) => m.type === 'ready');
+    if (!ready || ready.type !== 'ready') throw new Error('Missing catalog');
+    const catalog = ready.catalog;
+    const unitCount = 64;
+    const scenario = {
+      map: {
+        width: 32,
+        height: 20,
+        surfaces: Array(640).fill('open'),
+        elevations: Array(693).fill(0),
+        obstacles: [],
+        patrol: [{ x: 16.5, y: 10.5 }],
+      },
+      seed: 1,
+      factions: catalog.defaultFactions,
+      loadouts: [],
+      timeLimit: 60,
+      units: Array.from({ length: unitCount }, (_, i) => {
+        const faction = i < 32 ? 0 : 1;
+        const local = i % 32;
+        const col = Math.floor(local / 16);
+        const row = local % 16;
+        return {
+          id: i + 1,
+          faction,
+          definitionId: catalog.units[0].id,
+          position: { x: faction === 0 ? 11.5 - col : 20.5 + col, y: 2.5 + row },
+          doctrine: { ...catalog.defaultDoctrine },
+        };
+      }),
+    };
+    const battleId = 200;
+    const compactMessages: {
+      tick: number;
+      unitCount: number;
+      byteLength: number;
+      firstId: number;
+      firstX: number;
+      firstHp: number;
+      hasInspected: boolean;
+      inspectedVersion: number | null;
+    }[] = [];
+    let fullSnapshotCount = 0;
+    let directInventoryCount = 0;
+    let inspectedInitialWeight = 0;
+
+    await new Promise<void>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('Compact battle timed out')), 10_000);
+      let requestedInspect = false;
+      function onMessage(event: MessageEvent) {
+        const msg = event.data;
+        if (msg.battleId !== battleId) return;
+        if (msg.type === 'error') {
+          clearTimeout(timeout);
+          worker.removeEventListener('message', onMessage);
+          reject(new Error(msg.message));
+          return;
+        }
+        if (msg.type === 'snapshot') {
+          fullSnapshotCount++;
+        } else if (msg.type === 'unitInventory') {
+          directInventoryCount++;
+          inspectedInitialWeight = msg.update.inventory.weightGrams;
+        } else if (msg.type === 'compactSnapshot') {
+          const view = new DataView(msg.buffer);
+          compactMessages.push({
+            tick: msg.tick,
+            unitCount: msg.unitCount,
+            byteLength: msg.buffer.byteLength,
+            firstId: view.getUint32(24, true),
+            firstX: view.getFloat64(0, true),
+            firstHp: view.getFloat64(16, true),
+            hasInspected: msg.inspectedInventory !== null,
+            inspectedVersion: msg.inspectedInventory?.version ?? null,
+          });
+          if (!requestedInspect && msg.tick >= 2) {
+            requestedInspect = true;
+            worker.postMessage({ type: 'inspect', battleId, unitId: 1 });
+          }
+          if (msg.tick >= 12) {
+            clearTimeout(timeout);
+            worker.removeEventListener('message', onMessage);
+            worker.postMessage({ type: 'reset', battleId: battleId + 1 });
+            resolve();
+          }
+        }
+      }
+      worker.addEventListener('message', onMessage);
+      worker.postMessage({ type: 'start', battleId, scenario });
+    });
+
+    return { compactMessages, fullSnapshotCount, directInventoryCount, inspectedInitialWeight };
+  });
+
+  expect(summary.fullSnapshotCount).toBe(0);
+  expect(summary.compactMessages.length).toBeGreaterThanOrEqual(4);
+  expect(summary.compactMessages[0].unitCount).toBe(64);
+  expect(summary.compactMessages[0].byteLength).toBe(64 * 72);
+  expect(summary.compactMessages[0].firstId).toBe(1);
+  expect(summary.compactMessages[0].firstHp).toBe(100);
+  expect(summary.compactMessages[0].hasInspected).toBe(false);
+  expect(summary.directInventoryCount).toBe(1);
+  expect(summary.inspectedInitialWeight).toBe(9520);
+  expect(summary.compactMessages.at(-1)!.tick).toBeGreaterThanOrEqual(12);
+});
+
+test('behind-real-time indicator surfaces Worker lag and clears when caught up or paused', async ({
+  page,
+}) => {
+  await openSkirmish(page);
+  await place(page, 0, 2.5, 2.5);
+  await place(page, 1, 29.5, 17.5);
+  await page.getByTestId('start-battle').click();
+  await expect(page.getByTestId('battle-status')).toHaveText('RUNNING');
+  await expect(page.getByTestId('behind-realtime')).toHaveCount(0);
+
+  await page.evaluate(() => {
+    window.observedWorkers.at(-1)!.worker.dispatchEvent(
+      new MessageEvent('message', {
+        data: { type: 'performance', battleId: 1, behindRealTime: true },
+      }),
+    );
+  });
+  await expect(page.getByTestId('behind-realtime')).toHaveText('Simulation behind real time');
+
+  await page.evaluate(() => {
+    window.observedWorkers.at(-1)!.worker.dispatchEvent(
+      new MessageEvent('message', {
+        data: { type: 'performance', battleId: 1, behindRealTime: false },
+      }),
+    );
+  });
+  await expect(page.getByTestId('behind-realtime')).toHaveCount(0);
+
+  await page.evaluate(() => {
+    window.observedWorkers.at(-1)!.worker.dispatchEvent(
+      new MessageEvent('message', {
+        data: { type: 'performance', battleId: 1, behindRealTime: true },
+      }),
+    );
+  });
+  await expect(page.getByTestId('behind-realtime')).toBeVisible();
+  await page.getByTestId('pause-battle').click();
+  await expect(page.getByTestId('behind-realtime')).toHaveCount(0);
+});
+
+test('renderer shares faction sprite textures and culls off-screen units when zoomed in', async ({
+  page,
+}) => {
+  await openSkirmish(page);
+  await place(page, 0, 2.5, 2.5);
+  await place(page, 0, 2.5, 17.5);
+  await place(page, 1, 29.5, 2.5);
+  await place(page, 1, 29.5, 17.5);
+
+  const battlefield = page.getByTestId('battlefield');
+  await expect(battlefield).toHaveAttribute('data-unit-textures', '2');
+  await expect(battlefield).toHaveAttribute('data-visible-units', '4');
+  await expect(battlefield).toHaveAttribute('data-culled-units', '0');
+
+  const zoomIn = page.getByRole('button', { name: 'Zoom in', exact: true });
+  for (let i = 0; i < 6; i++) await zoomIn.click();
+  await expect
+    .poll(async () => Number(await battlefield.getAttribute('data-culled-units')))
+    .toBeGreaterThan(0);
+  await expect
+    .poll(async () => Number(await battlefield.getAttribute('data-visible-units')))
+    .toBeLessThan(4);
+
+  await page.getByRole('button', { name: 'Fit map', exact: true }).click();
+  await expect(battlefield).toHaveAttribute('data-visible-units', '4');
+  await expect(battlefield).toHaveAttribute('data-culled-units', '0');
+});

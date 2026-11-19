@@ -1,8 +1,8 @@
 //! Post-movement perception refresh, per-tick item/weapon action execution, and simultaneous damage.
 
 use crate::{
-    battle::StepTimer, item_actions::Action, map, perception, terrain::Terrain, types::*,
-    unit::Unit,
+    battle::StepTimer, item_actions::Action, map, perception, spatial::SpatialGrid,
+    terrain::Terrain, types::*, unit::Unit,
 };
 
 #[cfg(test)]
@@ -12,11 +12,13 @@ use crate::terrain::TerrainCache;
 pub(crate) fn execute(units: &mut [Unit], map: &ArenaMap, rng: &mut u64, tick: u32) {
     let cache = TerrainCache::without_neighbors(map);
     let terrain = cache.view(map);
+    let mut spatial = SpatialGrid::new(map.width, map.height);
     let pre = vec![Vec::new(); units.len()];
     let moved = vec![true; units.len()];
     let mut post = vec![Vec::new(); units.len()];
     execute_with_context(
         units,
+        &mut spatial,
         terrain,
         rng,
         tick,
@@ -30,6 +32,7 @@ pub(crate) fn execute(units: &mut [Unit], map: &ArenaMap, rng: &mut u64, tick: u
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_with_context<T: StepTimer>(
     units: &mut [Unit],
+    spatial: &mut SpatialGrid,
     terrain: Terrain<'_>,
     rng: &mut u64,
     tick: u32,
@@ -38,7 +41,18 @@ pub(crate) fn execute_with_context<T: StepTimer>(
     observations: &mut [Vec<usize>],
     timer: &mut T,
 ) {
-    perception::refresh_post_movement(units, terrain, tick, pre_observations, moved, observations);
+    if moved.iter().any(|&m| m) {
+        spatial.rebuild(units);
+    }
+    perception::refresh_post_movement(
+        units,
+        spatial,
+        terrain,
+        tick,
+        pre_observations,
+        moved,
+        observations,
+    );
     for (u, seen) in units.iter_mut().zip(observations.iter()) {
         if !seen.is_empty() {
             u.perception.last_contact = tick;
@@ -50,7 +64,7 @@ pub(crate) fn execute_with_context<T: StepTimer>(
             u.combat.tick_cooldowns();
         }
     }
-    let actions = crate::item_actions::select(units, terrain, tick, observations);
+    let actions = crate::item_actions::select(units, spatial, terrain, tick, observations);
     timer.mark_item_actions();
     let mut damage = vec![0.0; units.len()];
     let mut heals = vec![false; units.len()];
@@ -104,14 +118,13 @@ pub(crate) fn execute_with_context<T: StepTimer>(
                             as u32,
                     );
                     units[i].combat.revealed_until = tick + crate::definitions::REVEAL_TICKS;
-                    for (k, v) in units.iter().enumerate() {
-                        if v.vitals.hp > 0.0
-                            && v.nav.position.distance(target) <= crate::consumables::BLAST_RADIUS
-                            && map::visible_t(terrain, target, v.nav.position, 0.1, 1.0)
+                    spatial.query_radius(target, crate::consumables::BLAST_RADIUS, |victim| {
+                        if victim.position.distance(target) <= crate::consumables::BLAST_RADIUS
+                            && map::visible_t(terrain, target, victim.position, 0.1, 1.0)
                         {
-                            damage[k] += crate::consumables::GRENADE_DAMAGE;
+                            damage[victim.index()] += crate::consumables::GRENADE_DAMAGE;
                         }
-                    }
+                    });
                 }
             }
             Some(Action::Fire {

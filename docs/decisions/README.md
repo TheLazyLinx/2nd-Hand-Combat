@@ -13,6 +13,7 @@ This directory records approved technical, gameplay, and workflow decisions for 
 | [0005](0005-svelte-5-runes-migration.md) | Full migration to Svelte 5 runes | Accepted | 7 |
 | [0006](0006-automated-verification-and-ci.md) | Automated verification, generated contracts, and CI | Accepted | 0A, 0B, 0C |
 | [0007](0007-agent-workflow-and-human-checkpoints.md) | Agent-maintained workflow and human-approval checkpoints | Accepted | 0D |
+| [0008](0008-scaling-spatial-grid-and-storage-layout.md) | Spatial grid, compact binary snapshots, and storage layout evaluation | Accepted | 6 |
 
 ## Adding or updating records
 

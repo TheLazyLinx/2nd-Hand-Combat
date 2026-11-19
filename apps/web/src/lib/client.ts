@@ -91,9 +91,19 @@ export class BattleClient {
     });
   }
 
-  start(scenario: Scenario) {
-    this.send({ type: 'start', battleId: ++this.battleId, scenario });
+  start(scenario: Scenario, options?: { compact?: boolean }) {
+    this.send({
+      type: 'start',
+      battleId: ++this.battleId,
+      scenario,
+      ...(options?.compact !== undefined ? { compact: options.compact } : {}),
+    });
     return this.battleId;
+  }
+
+  inspect(unitId: number | null) {
+    if (this.battleId === 0) return;
+    this.send({ type: 'inspect', battleId: this.battleId, unitId });
   }
 
   pause() {

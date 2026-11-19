@@ -23,7 +23,7 @@ use crate::terrain::TerrainCache;
 pub(crate) struct DecisionInput<'a> {
     pub unit: &'a Unit,
     pub visible_enemy: Option<Point>,
-    pub allies: Vec<Point>,
+    pub allies: &'a [Point],
     pub tick: u32,
     pub visible_enemy_revealed: bool,
 }
@@ -196,7 +196,7 @@ mod acceptance_tests {
             &DecisionInput {
                 unit,
                 visible_enemy: enemy,
-                allies: vec![],
+                allies: &[],
                 tick: 1,
                 visible_enemy_revealed: false,
             },
@@ -384,7 +384,7 @@ mod acceptance_tests {
         let input = DecisionInput {
             unit: &u,
             visible_enemy: None,
-            allies: vec![],
+            allies: &[],
             tick: 1,
             visible_enemy_revealed: false,
         };
