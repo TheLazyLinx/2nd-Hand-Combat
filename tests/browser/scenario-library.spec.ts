@@ -492,7 +492,7 @@ test('malformed supplied inventory doctrines are rejected without changing the d
   for (const [document, error] of [
     [missing, /Medical doctrine/],
     [invalid, /doctrine|throw|grenade/i],
-    [legacyMalformed, /Maximum throw distance/],
+    [legacyMalformed, /maxDistance|Maximum throw distance/i],
   ] as const) {
     await page.locator('input[type=file]').setInputFiles({
       name: 'invalid.json',

@@ -3,8 +3,8 @@ import init, {
   catalog_json,
   validate_scenario_json,
   WasmBattle,
-} from './generated/sim_wasm';
-import wasmUrl from './generated/sim_wasm_bg.wasm?url';
+} from './generated/wasm/sim_wasm';
+import wasmUrl from './generated/wasm/sim_wasm_bg.wasm?url';
 import type {
   Catalog,
   ScenarioAnalysis,

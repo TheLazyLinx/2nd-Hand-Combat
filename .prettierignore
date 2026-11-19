@@ -2,7 +2,7 @@ dist/
 target/
 .tools/
 .github/workflows/
-apps/web/src/generated/
+apps/web/src/generated/wasm/
 test-results/
 playwright-report/
 package-lock.json

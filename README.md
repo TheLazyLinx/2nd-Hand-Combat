@@ -32,7 +32,9 @@ npm run fmt:web         # Format TypeScript, Svelte, CSS, and scripts with Prett
 npm run fmt:web:check   # Check web formatting
 npm run lint:web        # ESLint (including module boundary rules)
 npm run test:boundaries # Regression tests for ESLint boundary rules
-npm run test:rust       # Native Rust tests (including sim-core boundary tests)
+npm run gen:types       # Regenerate apps/web/src/generated/sim-types.ts from crates/sim-core
+npm run check:types-sync # Verify generated TypeScript types match crates/sim-core
+npm run test:rust       # Native Rust tests (including sim-core boundary and TS contract tests)
 npm run lint:rust       # Clippy
 npm run fmt:check       # Rust formatting check
 npm run deny:rust       # Rust dependency licence, advisory, and source check

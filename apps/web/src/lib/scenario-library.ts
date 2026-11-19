@@ -19,20 +19,6 @@ function list(value: unknown, label: string): unknown[] {
   if (!Array.isArray(value)) throw new Error(`${label} must be an array.`);
   return value;
 }
-function finite(value: unknown, label: string): asserts value is number {
-  if (typeof value !== 'number' || !Number.isFinite(value))
-    throw new Error(`${label} must be a finite number.`);
-}
-function uint(value: unknown, label: string) {
-  finite(value, label);
-  if (!Number.isInteger(value) || value < 0 || value > 0xffffffff)
-    throw new Error(`${label} must be an unsigned integer.`);
-}
-function point(value: unknown, label: string) {
-  const p = record(value, label);
-  finite(p.x, `${label} x`);
-  finite(p.y, `${label} y`);
-}
 function text(
   value: unknown,
   label: string,
@@ -45,8 +31,8 @@ function text(
     );
 }
 
-/** Upgrade only absent legacy fields. Supplied values must pass the same checks as v2. */
-function inventoryDoctrine(
+/** Upgrade only absent legacy fields. Rust validates field values, enums, and numeric limits. */
+function migrateInventoryDoctrine(
   doctrine: Record<string, unknown>,
   legacy: boolean,
   defaults?: Doctrine,
@@ -57,24 +43,13 @@ function inventoryDoctrine(
     return structuredClone(defaults[key]);
   }
   const grenades = record(introduced('grenades'), 'Grenade doctrine');
-  if (!['never', 'clusters', 'anySafeTarget', 'emptyRifleOnly'].includes(grenades.policy as string))
-    throw new Error('Unknown grenade policy.');
-  finite(grenades.maxDistance, 'Maximum throw distance');
-  uint(grenades.minEnemies, 'Minimum grenade cluster size');
-  finite(grenades.safetyMargin, 'Grenade safety margin');
   const medical = record(introduced('medical'), 'Medical doctrine');
-  if (!['never', 'outOfContact', 'lowHealth'].includes(medical.policy as string))
-    throw new Error('Unknown medical policy.');
-  finite(medical.hpThreshold, 'Treatment health threshold');
-  finite(medical.safeSeconds, 'Treatment safe interval');
-  finite(medical.cooldownSeconds, 'Treatment cooldown');
   const outOfAmmoBehavior = introduced('outOfAmmoBehavior');
-  if (!['withdraw', 'continueDoctrine'].includes(outOfAmmoBehavior as string))
-    throw new Error('Unknown empty-rifle behavior.');
+  if (typeof outOfAmmoBehavior !== 'string') throw new Error('Unknown empty-rifle behavior.');
   return { ...doctrine, grenades, medical, outOfAmmoBehavior };
 }
 
-/** Checks portable structure and upgrades v1 in memory; Rust decides numeric limits and readiness. */
+/** Checks portable envelope and upgrades v1 in memory; Rust owns scenario field and gameplay validation. */
 export function parseScenarioDocument(json: string, defaultDoctrine?: Doctrine): ScenarioDocument {
   if (new TextEncoder().encode(json).byteLength > MAX_DOCUMENT_BYTES)
     throw new Error('Scenario files must be no larger than 8 MiB.');
@@ -93,39 +68,12 @@ export function parseScenarioDocument(json: string, defaultDoctrine?: Doctrine):
   const description = doc.description === undefined ? '' : doc.description;
   text(description, 'Description', 2000);
   const scenario = record(doc.scenario, 'Scenario');
-  uint(scenario.seed, 'Seed');
-  finite(scenario.timeLimit, 'Time limit');
-  list(scenario.factions, 'Factions').forEach((value) => uint(value, 'Faction ID'));
-  const map = record(scenario.map, 'Map');
-  uint(map.width, 'Map width');
-  uint(map.height, 'Map height');
-  const surfaces = new Set(['open', 'road', 'mud', 'brush', 'woodland']);
-  list(map.surfaces, 'Surfaces').forEach((value) => {
-    if (!surfaces.has(value as string)) throw new Error('Unknown terrain surface.');
-  });
-  list(map.elevations, 'Elevations').forEach((value) => finite(value, 'Elevation'));
-  list(map.patrol, 'Patrol points').forEach((value) => point(value, 'Patrol point'));
-  list(map.obstacles, 'Obstacles').forEach((value) => {
-    const obstacle = record(value, 'Obstacle');
-    for (const key of ['x', 'y', 'width', 'height']) uint(obstacle[key], `Obstacle ${key}`);
-    finite(obstacle.heightMetres, 'Obstacle height');
-  });
   const units = list(scenario.units, 'Units').map((value) => {
     const unit = record(value, 'Soldier');
-    uint(unit.id, 'Soldier ID');
-    uint(unit.faction, 'Soldier faction');
-    text(unit.definitionId, 'Soldier definition', 100, true);
-    point(unit.position, 'Soldier position');
     const doctrine = record(unit.doctrine, 'Doctrine');
-    finite(doctrine.engagementDistance, 'Engagement distance');
-    finite(doctrine.fallbackHp, 'Fallback health');
-    if (!['balanced', 'cover', 'concealment'].includes(doctrine.positionPreference as string))
-      throw new Error('Unknown position preference.');
-    if (!['fastest', 'protected'].includes(doctrine.routePreference as string))
-      throw new Error('Unknown route preference.');
     return {
       ...unit,
-      doctrine: inventoryDoctrine(doctrine, doc.schemaVersion === 1, defaultDoctrine),
+      doctrine: migrateInventoryDoctrine(doctrine, doc.schemaVersion === 1, defaultDoctrine),
     };
   });
   // Parsing makes a detached plain-data document. Unknown metadata has no executable behavior.

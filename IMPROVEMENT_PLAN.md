@@ -1,6 +1,6 @@
 # Improvement Plan
 
-Status: in progress (updated 19 November 2026 against `main` `dd945eb`, after merging `feature/inventory`). Phase 0A is complete. Approved decisions are recorded in [Decisions](#decisions) at the end.
+Status: in progress (updated 19 November 2026 against `main` `dd945eb`, after merging `feature/inventory`). Phases 0A and 0B are complete. Approved decisions are recorded in [Decisions](#decisions) at the end.
 
 This file is the single tracker for this work. Agents check off items in the same change that completes them.
 
@@ -56,9 +56,9 @@ Establish automated guardrails, generated contracts, behavioural visibility, and
 
 ### 0B — Generated Rust ↔ TypeScript contract
 
-- [ ] Generate TypeScript types from `sim-core` using `ts-rs` or `specta` into `apps/web/src/generated/`, replacing hand-copied types in [types.ts](apps/web/src/lib/types.ts) (leaving only Worker message wrappers or web-only UI types). Add a check in `verify:fast` that generated types are up to date.
-- [ ] Split `crates/sim-core/src/types.rs` (already 414 lines) into submodules (`types/{mod, map, doctrine, inventory, scenario, snapshot}.rs`) so parallel agents do not collide on one shared file.
-- [ ] Reduce duplicated structural validation in [scenario-library.ts](apps/web/src/lib/scenario-library.ts): keep portable JSON version detection and schema migration in TypeScript, and rely on Rust analysis/validation for field rules.
+- [x] Generate TypeScript types from `sim-core` using `ts-rs` (`default-features = false`, optional `ts-export` feature, zero WASM/runtime impact) into [apps/web/src/generated/sim-types.ts](apps/web/src/generated/sim-types.ts), replacing hand-copied wire types in [types.ts](apps/web/src/lib/types.ts) (keeping only `ScenarioDocument`, `WorkerCommand`, and `WorkerReply`). Moved WASM build output to `apps/web/src/generated/wasm/`. Added `npm run gen:types`, `npm run check:types-sync` (wired into `verify:fast` and `verify`), and a Rust `serde_json` vs TS key/variant parity test.
+- [x] Split `crates/sim-core/src/types.rs` into focused submodules (`crates/sim-core/src/types/{mod, map, doctrine, inventory, scenario, snapshot}.rs`) so parallel agents do not collide on one shared file.
+- [x] Reduced duplicated structural validation in [scenario-library.ts](apps/web/src/lib/scenario-library.ts): kept portable JSON envelope checks and v1 → v2 doctrine migration in TypeScript, delegating scenario field/enum/numeric validation to Rust.
 
 ### 0C — Benchmarks, reference oracles, and behavioural visibility
 

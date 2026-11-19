@@ -6,7 +6,7 @@ runTool('wasm-pack', [
   '--target',
   'web',
   '--out-dir',
-  join(root, 'apps/web/src/generated'),
+  join(root, 'apps/web/src/generated/wasm'),
   '--out-name',
   'sim_wasm',
   '--no-pack',

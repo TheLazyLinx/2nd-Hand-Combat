@@ -10,7 +10,7 @@ const WORKER_AND_WASM_PATTERNS = [
     message: 'Do not import Worker internals directly; use BattleClient.',
   },
   {
-    group: ['**/generated/*', '**/generated/**'],
+    group: ['**/generated/wasm', '**/generated/wasm/*', '**/generated/wasm/**', '**/sim_wasm*'],
     message: 'Only apps/web/src/worker.ts may import generated WASM bindings.',
   },
 ];
@@ -21,7 +21,7 @@ export default tseslint.config(
       'dist/',
       'target/',
       '.tools/',
-      'apps/web/src/generated/',
+      'apps/web/src/generated/wasm/',
       'test-results/',
       'playwright-report/',
       'node_modules/',

@@ -1,5 +1,13 @@
 import { Application, Container, Graphics, Text } from 'pixi.js';
-import type { Catalog, Scenario, Snapshot, UnitPlacement, UnitSnapshot, Point } from './types';
+import type {
+  AnalysisIssue,
+  Catalog,
+  Scenario,
+  Snapshot,
+  UnitPlacement,
+  UnitSnapshot,
+  Point,
+} from './types';
 
 export interface Camera {
   x: number;
@@ -12,7 +20,7 @@ export interface EditorOptions {
   onEnd: (point: Point) => void;
   camera?: Camera;
   onCameraChange?: (camera: Camera) => void;
-  issues?: { severity: 'error' | 'warning'; position: Point | null }[];
+  issues?: { severity: AnalysisIssue['severity']; position: Point | null }[];
   steepEdges?: Point[];
   brushRadius?: number;
   brushAtVertices?: boolean;

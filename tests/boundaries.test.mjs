@@ -23,7 +23,7 @@ test('Svelte components cannot import Worker internals or generated WASM binding
 
   const wasmImport = await lintSnippet(
     'apps/web/src/components/Sample.svelte',
-    `<script lang="ts">\n  import init from '../generated/sim_wasm';\n  void init;\n</script>\n`,
+    `<script lang="ts">\n  import init from '../generated/wasm/sim_wasm';\n  void init;\n</script>\n`,
   );
   assert.ok(
     wasmImport.some((m) => m.ruleId === 'no-restricted-imports'),

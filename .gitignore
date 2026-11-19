@@ -2,7 +2,7 @@ node_modules/
 target/
 dist/
 .tools/
-apps/web/src/generated/
+apps/web/src/generated/wasm/
 test-results/
 playwright-report/
 *.log
