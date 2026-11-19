@@ -1,14 +1,108 @@
-use crate::{map, types::*};
+//! Game-wide catalog definitions: surfaces, map presets, unit specs, weapon specs,
+//! default factions, doctrine rules, and centralized simulation tuning constants.
+//!
+//! Invariant: base materials (units, weapons, items, surfaces) are defined game-wide here
+//! and referenced by compact static IDs in simulation loops; scenarios only compose loadouts.
+
+use crate::{
+    inventory::{
+        item_spec, ItemId, ITEM_ENTRENCHING_TOOL, ITEM_FRAG_GRENADE, ITEM_MEDICAL_SUPPLY,
+        ITEM_RATION, ITEM_RIFLE, ITEM_RIFLE_AMMO, ITEM_WATER,
+    },
+    map,
+    types::*,
+};
+
 pub(crate) const STEP: f64 = 0.05;
-pub(crate) const MAX_HP: f64 = 100.0;
-pub(crate) const SPEED: f64 = 2.0;
-pub(crate) const RANGE: f64 = 12.0;
-pub(crate) const DAMAGE: f64 = 20.0;
-pub(crate) const HIT_CHANCE: f64 = 0.7;
-pub(crate) const COOLDOWN: f64 = 1.0;
 pub(crate) const REVEAL_TICKS: u32 = 40;
 pub(crate) const LOW_OBSTACLE_HEIGHT: f64 = 0.9;
 pub(crate) const FULL_OBSTACLE_HEIGHT: f64 = 2.4;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct WeaponId(pub(crate) usize);
+
+pub(crate) const WEAPON_RIFLE: WeaponId = WeaponId(0);
+
+pub(crate) struct WeaponSpec {
+    pub id: &'static str,
+    pub range: f64,
+    pub damage: f64,
+    pub hit_chance: f64,
+    pub ammo_item: ItemId,
+    pub cooldown: f64,
+    pub moving_fire_multiplier: f64,
+}
+
+const WEAPONS: [WeaponSpec; 1] = [WeaponSpec {
+    id: "rifle",
+    range: 12.0,
+    damage: 20.0,
+    hit_chance: 0.7,
+    ammo_item: ITEM_RIFLE_AMMO,
+    cooldown: 1.0,
+    moving_fire_multiplier: 1.0,
+}];
+
+#[inline]
+pub(crate) fn weapon_spec(id: WeaponId) -> &'static WeaponSpec {
+    &WEAPONS[id.0]
+}
+
+pub(crate) struct UnitSpec {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub max_hp: f64,
+    pub speed: f64,
+    pub eye_height: f64,
+    pub muzzle_height: f64,
+    pub target_heights: [f64; 3],
+    pub spotting_range: f64,
+    pub moving_fire_multiplier: f64,
+    pub max_weight_grams: u32,
+    pub max_stowed_volume_ml: u32,
+    pub default_loadout: &'static [(ItemId, u32)],
+}
+
+const INFANTRY_DEFAULT_LOADOUT: &[(ItemId, u32)] = &[
+    (ITEM_RIFLE, 1),
+    (ITEM_RIFLE_AMMO, 60),
+    (ITEM_FRAG_GRENADE, 2),
+    (ITEM_ENTRENCHING_TOOL, 1),
+    (ITEM_MEDICAL_SUPPLY, 2),
+    (ITEM_RATION, 2),
+    (ITEM_WATER, 2),
+];
+
+pub(crate) const INFANTRY_SPEC: UnitSpec = UnitSpec {
+    id: "infantry",
+    name: "Infantry",
+    max_hp: 100.0,
+    speed: 2.0,
+    eye_height: 1.6,
+    muzzle_height: 1.4,
+    target_heights: [0.4, 0.9, 1.4],
+    spotting_range: 14.0,
+    moving_fire_multiplier: 1.0,
+    max_weight_grams: 20_000,
+    max_stowed_volume_ml: 15_000,
+    default_loadout: INFANTRY_DEFAULT_LOADOUT,
+};
+
+const UNIT_SPECS: [&UnitSpec; 1] = [&INFANTRY_SPEC];
+
+pub(crate) fn unit_spec(id: &str) -> Option<&'static UnitSpec> {
+    UNIT_SPECS.iter().copied().find(|spec| spec.id == id)
+}
+
+#[inline]
+pub(crate) fn default_unit_spec() -> &'static UnitSpec {
+    &INFANTRY_SPEC
+}
+
+// Re-export infantry defaults for geometry/tests that reference baseline unit metrics.
+pub(crate) const SPEED: f64 = INFANTRY_SPEC.speed;
+#[cfg(test)]
+pub(crate) const DAMAGE: f64 = WEAPONS[0].damage;
 
 /// Centralized simulation tuning constants for decision cadence, tactical radii, sustainment,
 /// and consumables. Keeps gameplay parameters in one place rather than scattered literals.
@@ -23,7 +117,6 @@ pub(crate) struct Tuning {
     pub patrol_arrive_distance: f64,
     pub reposition_radius: f64,
     pub fallback_radius: f64,
-    pub spotting_range: f64,
     pub investigate_max_radius: f64,
     pub investigate_max_cost: f64,
     pub nutrition_drain_per_second: f64,
@@ -50,7 +143,6 @@ pub(crate) const TUNING: Tuning = Tuning {
     patrol_arrive_distance: 0.4,
     reposition_radius: 3.0,
     fallback_radius: 5.0,
-    spotting_range: 14.0,
     investigate_max_radius: 24.0,
     investigate_max_cost: 40.0,
     nutrition_drain_per_second: 0.5,
@@ -65,6 +157,24 @@ pub(crate) const TUNING: Tuning = Tuning {
     need_use_threshold: 50.0,
     need_restore: 40.0,
 };
+
+pub fn default_factions() -> Vec<FactionDefinition> {
+    vec![
+        FactionDefinition {
+            id: 0,
+            name: "North".into(),
+            color: 0x315f62,
+            patrol_direction: PatrolDirection::Forward,
+        },
+        FactionDefinition {
+            id: 1,
+            name: "South".into(),
+            color: 0xa24f32,
+            patrol_direction: PatrolDirection::Reverse,
+        },
+    ]
+}
+
 pub fn surface_definition(id: Surface) -> &'static SurfaceDefinition {
     static DEFS: std::sync::OnceLock<Vec<SurfaceDefinition>> = std::sync::OnceLock::new();
     let defs = DEFS.get_or_init(|| {
@@ -104,6 +214,7 @@ pub fn surface_definition(id: Surface) -> &'static SurfaceDefinition {
         Surface::Woodland => 4,
     }]
 }
+
 fn base() -> ArenaMap {
     ArenaMap {
         width: 32,
@@ -119,6 +230,7 @@ fn base() -> ArenaMap {
         ],
     }
 }
+
 fn paint(m: &mut ArenaMap, x0: usize, y0: usize, x1: usize, y1: usize, s: Surface) {
     for y in y0..y1 {
         for x in x0..x1 {
@@ -126,6 +238,7 @@ fn paint(m: &mut ArenaMap, x0: usize, y0: usize, x1: usize, y1: usize, s: Surfac
         }
     }
 }
+
 fn obstacle(m: &mut ArenaMap, x: u32, y: u32, height_metres: f64) {
     m.obstacles.push(Obstacle {
         x,
@@ -135,6 +248,7 @@ fn obstacle(m: &mut ArenaMap, x: u32, y: u32, height_metres: f64) {
         height_metres,
     });
 }
+
 fn presets() -> Vec<MapPreset> {
     let mut training = base();
     paint(&mut training, 0, 9, 32, 11, Surface::Road);
@@ -192,6 +306,7 @@ fn presets() -> Vec<MapPreset> {
         },
     ]
 }
+
 pub fn editor_rules() -> EditorRules {
     EditorRules {
         min_dimension: 1,
@@ -201,39 +316,53 @@ pub fn editor_rules() -> EditorRules {
         max_obstacle_height: 100.0,
     }
 }
-pub(crate) struct WeaponSpec {
-    pub range: f64,
-    pub damage: f64,
-    pub hit_chance: f64,
-    pub ammo_item_id: &'static str,
-    pub cooldown: f64,
+
+fn weapon_definitions() -> Vec<WeaponDefinition> {
+    WEAPONS
+        .iter()
+        .map(|w| WeaponDefinition {
+            id: w.id.into(),
+            range: w.range,
+            damage: w.damage,
+            hit_chance: w.hit_chance,
+            ammo_item_id: item_spec(w.ammo_item).id.into(),
+            cooldown: w.cooldown,
+            moving_fire_multiplier: w.moving_fire_multiplier,
+        })
+        .collect()
 }
 
-const RIFLE_SPEC: WeaponSpec = WeaponSpec {
-    range: RANGE,
-    damage: DAMAGE,
-    hit_chance: HIT_CHANCE,
-    ammo_item_id: "rifle-ammo",
-    cooldown: COOLDOWN,
-};
-
-pub(crate) fn weapon_spec(id: &str) -> Option<&'static WeaponSpec> {
-    (id == "rifle").then_some(&RIFLE_SPEC)
+fn unit_definitions() -> Vec<UnitDefinition> {
+    UNIT_SPECS
+        .iter()
+        .map(|u| UnitDefinition {
+            id: u.id.into(),
+            name: u.name.into(),
+            max_hp: u.max_hp,
+            speed: u.speed,
+            eye_height: u.eye_height,
+            muzzle_height: u.muzzle_height,
+            target_heights: u.target_heights.to_vec(),
+            spotting_range: u.spotting_range,
+            moving_fire_multiplier: u.moving_fire_multiplier,
+            max_weight_grams: u.max_weight_grams,
+            max_stowed_volume_ml: u.max_stowed_volume_ml,
+            default_loadout: u
+                .default_loadout
+                .iter()
+                .map(|&(item, quantity)| LoadoutEntry {
+                    item_id: item_spec(item).id.into(),
+                    quantity,
+                })
+                .collect(),
+        })
+        .collect()
 }
 
-pub(crate) fn rifle() -> WeaponDefinition {
-    WeaponDefinition {
-        id: "rifle".into(),
-        range: RANGE,
-        damage: DAMAGE,
-        hit_chance: HIT_CHANCE,
-        ammo_item_id: "rifle-ammo".into(),
-        cooldown: COOLDOWN,
-    }
-}
 fn rule(min: f64, max: f64, step: f64) -> Rule {
     Rule { min, max, step }
 }
+
 pub(crate) fn doctrine_rules() -> DoctrineRules {
     DoctrineRules {
         grenade_max_distance: rule(2.0, 6.0, 0.5),
@@ -244,6 +373,7 @@ pub(crate) fn doctrine_rules() -> DoctrineRules {
         medical_cooldown_seconds: rule(1.0, 60.0, 1.0),
     }
 }
+
 pub fn catalog() -> Catalog {
     let maps = presets();
     let terrain_cells = maps
@@ -271,7 +401,6 @@ pub fn catalog() -> Catalog {
         })
         .collect();
     Catalog {
-        map: maps[0].map.clone(),
         editor_rules: editor_rules(),
         maps,
         surfaces: [
@@ -287,15 +416,9 @@ pub fn catalog() -> Catalog {
         low_obstacle_height: LOW_OBSTACLE_HEIGHT,
         full_obstacle_height: FULL_OBSTACLE_HEIGHT,
         terrain_cells,
-        unit: UnitDefinition {
-            id: "infantry".into(),
-            name: "Infantry".into(),
-            max_hp: MAX_HP,
-            speed: SPEED,
-            max_weight_grams: 20000,
-            max_stowed_volume_ml: 15000,
-        },
-        weapon: rifle(),
+        units: unit_definitions(),
+        weapons: weapon_definitions(),
+        default_factions: default_factions(),
         default_doctrine: Doctrine {
             engagement_distance: 8.0,
             fallback_hp: 30.0,
@@ -304,14 +427,13 @@ pub fn catalog() -> Catalog {
             grenades: GrenadeDoctrine::default(),
             medical: MedicalDoctrine::default(),
             out_of_ammo_behavior: OutOfAmmoBehavior::default(),
+            fire_while_moving: false,
         },
         items: crate::inventory::items(),
         item_use_properties: crate::consumables::catalog(),
-        weapons: vec![rifle()],
-        default_loadout: crate::inventory::loadout(),
-        default_inventory: crate::inventory::Inventory::new().snapshot(),
+        default_inventory: crate::inventory::Inventory::default_infantry().snapshot(),
         doctrine_rules: doctrine_rules(),
-        max_per_faction: 8,
+        max_per_faction: crate::validation::SKIRMISH_MAX_PER_FACTION,
         default_time_limit: 180.0,
         default_seed: 1,
     }

@@ -219,7 +219,8 @@ test(
           patrol: [],
         },
         seed: 1,
-        factions: [0, 1],
+        factions: ready.catalog.defaultFactions,
+        loadouts: [],
         timeLimit: 1,
         units: [0, 1].map((faction) => ({
           id: faction + 1,
@@ -396,12 +397,13 @@ test('real Workers apply terrain movement and sight and reject malformed terrain
     const makeScenario = (map: ReturnType<typeof makeMap>, near: boolean) => ({
       map,
       seed: 1,
-      factions: [0, 1],
+      factions: catalog.defaultFactions,
+      loadouts: [],
       timeLimit: 180,
       units: [0, 1].map((faction) => ({
         id: faction + 1,
         faction,
-        definitionId: catalog.unit.id,
+        definitionId: catalog.units[0].id,
         position: { x: faction ? (near ? 7.5 : 28.5) : 3.5, y: faction && !near ? 18.5 : 5.5 },
         doctrine: { ...catalog.defaultDoctrine },
       })),
@@ -522,12 +524,13 @@ test(
         const scenario = {
           map: preset.map,
           seed: 1,
-          factions: [0, 1],
+          factions: catalog.defaultFactions,
+          loadouts: [],
           timeLimit: 180,
           units: Array.from({ length: 16 }, (_, i) => ({
             id: i + 1,
             faction: i < 8 ? 0 : 1,
-            definitionId: catalog.unit.id,
+            definitionId: catalog.units[0].id,
             position: { x: i < 8 ? 9.5 : 22.5, y: 2.5 + (i % 8) * 2 },
             doctrine: { ...catalog.defaultDoctrine, routePreference: 'protected' as const },
           })),
@@ -639,7 +642,7 @@ test(
       const units = Array.from({ length: 16 }, (_, i) => ({
         id: i + 1,
         faction: i < 8 ? 0 : 1,
-        definitionId: catalog.unit.id,
+        definitionId: catalog.units[0].id,
         position: { x: i < 8 ? 57.5 : 69.5, y: 55.5 + (i % 8) * 2 },
         doctrine: { ...catalog.defaultDoctrine, routePreference: i % 2 ? 'protected' : 'fastest' },
       }));

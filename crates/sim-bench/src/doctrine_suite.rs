@@ -60,6 +60,7 @@ fn place(id: u32, faction: u32, x: f64, y: f64, doctrine: Doctrine) -> UnitPlace
         definition_id: "infantry".into(),
         position: Point { x, y },
         doctrine,
+        loadout: None,
     }
 }
 
@@ -70,9 +71,10 @@ fn engagement_scenario(seed: u32, engagement_distance: f64) -> Scenario {
     Scenario {
         map: ArenaMap::flat(20, 8),
         seed,
-        factions: vec![0, 1],
+        factions: default_factions(),
+        loadouts: vec![],
         units: vec![place(1, 0, 2.5, 4.5, d0), place(2, 1, 14.5, 4.5, d1)],
-        time_limit: 60.0,
+        time_limit: Some(60.0),
     }
 }
 
@@ -109,14 +111,15 @@ fn position_scenario(seed: u32, pref: PositionPreference) -> Scenario {
     Scenario {
         map,
         seed,
-        factions: vec![0, 1],
+        factions: default_factions(),
+        loadouts: vec![],
         units: vec![
             place(1, 0, 5.5, 5.5, d0.clone()),
             place(2, 0, 6.5, 5.5, d0),
             place(3, 1, 12.5, 4.5, d1.clone()),
             place(4, 1, 12.5, 6.5, d1),
         ],
-        time_limit: 60.0,
+        time_limit: Some(60.0),
     }
 }
 
@@ -149,14 +152,15 @@ fn route_scenario(seed: u32, pref: RoutePreference) -> Scenario {
     Scenario {
         map,
         seed,
-        factions: vec![0, 1],
+        factions: default_factions(),
+        loadouts: vec![],
         units: vec![
             place(1, 0, 2.5, 5.5, d0.clone()),
             place(2, 0, 3.5, 5.5, d0),
             place(3, 1, 13.5, 5.5, d1.clone()),
             place(4, 1, 13.5, 6.5, d1),
         ],
-        time_limit: 60.0,
+        time_limit: Some(60.0),
     }
 }
 
@@ -178,7 +182,8 @@ fn grenade_scenario(seed: u32, policy: GrenadePolicy) -> Scenario {
     Scenario {
         map: ArenaMap::flat(16, 10),
         seed,
-        factions: vec![0, 1],
+        factions: default_factions(),
+        loadouts: vec![],
         units: vec![
             place(1, 0, 4.5, 4.5, d0.clone()),
             place(2, 0, 4.5, 5.5, d0),
@@ -186,7 +191,7 @@ fn grenade_scenario(seed: u32, policy: GrenadePolicy) -> Scenario {
             place(4, 1, 9.5, 5.5, d1.clone()),
             place(5, 1, 10.2, 5.0, d1),
         ],
-        time_limit: 60.0,
+        time_limit: Some(60.0),
     }
 }
 
@@ -225,14 +230,15 @@ fn medical_scenario(seed: u32, policy: MedicalPolicy) -> Scenario {
     Scenario {
         map,
         seed,
-        factions: vec![0, 1],
+        factions: default_factions(),
+        loadouts: vec![],
         units: vec![
             place(1, 0, 4.5, 3.5, d0.clone()),
             place(2, 0, 4.5, 6.5, d0),
             place(3, 1, 11.5, 3.5, d1.clone()),
             place(4, 1, 11.5, 6.5, d1),
         ],
-        time_limit: 60.0,
+        time_limit: Some(60.0),
     }
 }
 
@@ -262,14 +268,15 @@ fn fallback_scenario(seed: u32, fallback_hp: f64) -> Scenario {
     Scenario {
         map,
         seed,
-        factions: vec![0, 1],
+        factions: default_factions(),
+        loadouts: vec![],
         units: vec![
             place(1, 0, 7.5, 3.5, d0.clone()),
             place(2, 0, 7.5, 6.5, d0),
             place(3, 1, 13.5, 3.5, d1.clone()),
             place(4, 1, 13.5, 6.5, d1),
         ],
-        time_limit: 60.0,
+        time_limit: Some(60.0),
     }
 }
 

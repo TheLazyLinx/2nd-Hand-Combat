@@ -23,20 +23,18 @@ export type BattleResult = {
 export type Behavior =
   'Searching' | 'Investigating' | 'Advancing' | 'Engaging' | 'Falling back' | 'Defending' | 'Dead';
 export type Catalog = {
-  map: ArenaMap;
   editorRules: EditorRules;
   maps: Array<MapPreset>;
   surfaces: Array<SurfaceDefinition>;
   lowObstacleHeight: number;
   fullObstacleHeight: number;
   terrainCells: Array<Array<TerrainCellInfo>>;
-  unit: UnitDefinition;
-  weapon: WeaponDefinition;
+  units: Array<UnitDefinition>;
+  weapons: Array<WeaponDefinition>;
+  defaultFactions: Array<FactionDefinition>;
   defaultDoctrine: Doctrine;
   items: Array<ItemDefinition>;
   itemUseProperties: { [key in string]: ItemUseProperties };
-  weapons: Array<WeaponDefinition>;
-  defaultLoadout: Array<LoadoutEntry>;
   defaultInventory: InventorySnapshot;
   doctrineRules: DoctrineRules;
   maxPerFaction: number;
@@ -51,6 +49,7 @@ export type Doctrine = {
   grenades: GrenadeDoctrine;
   medical: MedicalDoctrine;
   outOfAmmoBehavior: OutOfAmmoBehavior;
+  fireWhileMoving: boolean;
 };
 export type DoctrineRules = {
   grenadeMaxDistance: Rule;
@@ -66,6 +65,12 @@ export type EditorRules = {
   minElevation: number;
   maxElevation: number;
   maxObstacleHeight: number;
+};
+export type FactionDefinition = {
+  id: number;
+  name: string;
+  color: number;
+  patrolDirection: PatrolDirection;
 };
 export type FactionResult = { faction: number; survivors: number; casualties: number };
 export type GrenadeDoctrine = {
@@ -115,6 +120,7 @@ export type MedicalDoctrine = {
   cooldownSeconds: number;
 };
 export type MedicalPolicy = 'never' | 'outOfContact' | 'lowHealth';
+export type NamedLoadout = { name: string; entries: Array<LoadoutEntry> };
 export type Obstacle = {
   x: number;
   y: number;
@@ -123,6 +129,7 @@ export type Obstacle = {
   heightMetres: number;
 };
 export type OutOfAmmoBehavior = 'withdraw' | 'continueDoctrine';
+export type PatrolDirection = 'forward' | 'reverse';
 export type Point = { x: number; y: number };
 export type PositionPreference = 'balanced' | 'cover' | 'concealment';
 export type RoutePreference = 'fastest' | 'protected';
@@ -130,9 +137,10 @@ export type Rule = { min: number; max: number; step: number };
 export type Scenario = {
   map: ArenaMap;
   seed: number;
-  factions: Array<number>;
+  factions: Array<FactionDefinition>;
   units: Array<UnitPlacement>;
-  timeLimit: number;
+  loadouts: Array<NamedLoadout>;
+  timeLimit: number | null;
 };
 export type ScenarioAnalysis = {
   structuralValid: boolean;
@@ -181,15 +189,24 @@ export type UnitDefinition = {
   name: string;
   maxHp: number;
   speed: number;
+  eyeHeight: number;
+  muzzleHeight: number;
+  targetHeights: Array<number>;
+  spottingRange: number;
+  movingFireMultiplier: number;
   maxWeightGrams: number;
   maxStowedVolumeMl: number;
+  defaultLoadout: Array<LoadoutEntry>;
 };
+export type UnitLoadout =
+  { kind: 'named'; name: string } | { kind: 'inline'; entries: Array<LoadoutEntry> };
 export type UnitPlacement = {
   id: number;
   faction: number;
   definitionId: string;
   position: Point;
   doctrine: Doctrine;
+  loadout?: UnitLoadout;
 };
 export type UnitSnapshot = {
   id: number;
@@ -213,4 +230,5 @@ export type WeaponDefinition = {
   hitChance: number;
   ammoItemId: string;
   cooldown: number;
+  movingFireMultiplier: number;
 };

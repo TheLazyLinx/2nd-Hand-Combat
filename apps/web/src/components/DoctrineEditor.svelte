@@ -1,4 +1,5 @@
 ﻿<script lang="ts">
+  import { unitDefinition } from '../lib/factions';
   import type { Catalog, Doctrine, UnitPlacement } from '../lib/types';
   export let unit: UnitPlacement;
   export let busy: boolean;
@@ -12,7 +13,7 @@
   <div class="editor-title">
     <div>
       <p class="eyebrow">INDIVIDUAL DOCTRINE</p>
-      <h3>Infantry #{unit.id}</h3>
+      <h3>{unitDefinition(catalog, unit.definitionId).name} #{unit.id}</h3>
     </div>
     <button class="text-button" onclick={onClose} aria-label="Close soldier details">
       &times;

@@ -188,33 +188,33 @@ Every scenario now beats all [ADR 0001](docs/decisions/0001-performance-targets.
 
 ### Unit state layout
 
-- [ ] Group the 23 fields of `Unit` in [unit.rs](crates/sim-core/src/unit.rs) into cohesive components (`Vitals`, `NavigationState`, `PerceptionMemory`, `CombatState`, `SustainmentState`, `Inventory`) so future fields (morale, armour, vehicles) do not create a monolith and packed/ECS storage remains practical later.
+- [x] Group the 23 fields of `Unit` in [unit.rs](crates/sim-core/src/unit.rs) into cohesive components (`Vitals`, `NavigationState`, `PerceptionMemory`, `CombatState`, `SustainmentState`, `Inventory`) so future fields (morale, armour, vehicles) do not create a monolith and packed/ECS storage remains practical later.
 
 ### Factions (any number)
 
-- [ ] Replace `Scenario.factions: Vec<u32>` with faction definitions: `{ id, name, color, patrol_direction }`. UI reads names and colours from scenario data rather than hardcoded `['North', 'South']` or `factions[0]` checks.
-- [ ] Add a single hostility query `is_hostile(a, b)` (initially `a != b`; hook for a future relations table, no alliance UI). Use it across perception, combat, grenade friendly-fire checks (`item_actions.rs`), and victory evaluation.
-- [ ] Victory ends the battle when no two surviving factions are hostile to each other. Results list every faction.
-- [ ] Validation requires at least two distinct factions instead of exactly two.
-- [ ] Remove the faction-index patrol direction heuristic in `decide()`; read patrol direction from faction data.
-- [ ] Skirmish may still default to two factions, but no code assumes two. Map Maker can add or remove factions.
+- [x] Replace `Scenario.factions: Vec<u32>` with faction definitions: `{ id, name, color, patrol_direction }`. UI reads names and colours from scenario data rather than hardcoded `['North', 'South']` or `factions[0]` checks.
+- [x] Add a single hostility query `is_hostile(a, b)` (initially `a != b`; hook for a future relations table, no alliance UI). Use it across perception, combat, grenade friendly-fire checks (`item_actions.rs`), and victory evaluation.
+- [x] Victory ends the battle when no two surviving factions are hostile to each other. Results list every faction.
+- [x] Validation requires at least two distinct factions instead of exactly two.
+- [x] Remove the faction-index patrol direction heuristic in `decide()`; read patrol direction from faction data.
+- [x] Skirmish may still default to two factions, but no code assumes two. Map Maker can add or remove factions.
 
 ### Game-wide base materials and custom loadouts
 
-- [ ] **Base materials are game-wide.** Unit types, weapons, and items/consumables live in the shared game catalog (`UnitDefinition`, `WeaponDefinition`, `ItemDefinition`, typed `ItemUseProperties`). Scenarios cannot invent base materials.
-- [ ] Separate item definitions from starting quantities: remove `initial` from `ItemSpec` in [inventory.rs](crates/sim-core/src/inventory.rs) and express starting gear as a `Loadout` on each `UnitDefinition`.
-- [ ] Move remaining hardcoded constants into definitions: `MAX_HP` (removing hardcoded `100.0` in `item_actions.rs` and `combat.rs`), `SPEED`, eye height, spotting range (`14.0`), target sample heights, weapon stats, and consumable stats. Reserve a mechanical `moving_fire_multiplier` field on weapon/unit definitions (unused in the test phase).
-- [ ] **Custom loadouts in scenarios.** A scenario may define named loadouts (e.g., `"Marksman"`) composed of catalog item IDs and quantities. A `UnitPlacement` keeps `definition_id` and may select a named scenario loadout or specify an inline loadout; omitting both uses the unit type's `default_loadout`.
-- [ ] Validation verifies that custom loadouts reference known catalog items, fit within the unit type's weight/volume capacity, and satisfy basic slot/compatibility rules.
-- [ ] Remove hardcoded `"rifle"` / `"rifle-ammo"` / `"frag-grenade"` / `"medical-supply"` / `"ration"` / `"water"` string lookups from simulation loops: resolve IDs to compact indices or typed item tags at `Battle::new`. Fix `Unit::withdrawing()` (`unit.rs`) and `InventoryDisplay.svelte` to inspect the unit's equipped weapon's ammo rather than `"rifle-ammo"`.
-- [ ] Track per-slot weapon state (`WeaponState { cooldown, ... }`) so multiple weapons fit without restructuring.
-- [ ] Separate **engine structural limits** (memory/safety bounds) from **mode rules** (Skirmish's 8-per-faction cap) so benchmarks and larger modes can exceed 8 per faction.
-- [ ] Remove redundant catalog singletons (`Catalog.map`, `Catalog.unit`, `Catalog.weapon`) once the frontend reads the registries.
+- [x] **Base materials are game-wide.** Unit types, weapons, and items/consumables live in the shared game catalog (`UnitDefinition`, `WeaponDefinition`, `ItemDefinition`, typed `ItemUseProperties`). Scenarios cannot invent base materials.
+- [x] Separate item definitions from starting quantities: remove `initial` from `ItemSpec` in [inventory.rs](crates/sim-core/src/inventory.rs) and express starting gear as a `Loadout` on each `UnitDefinition`.
+- [x] Move remaining hardcoded constants into definitions: `MAX_HP` (removing hardcoded `100.0` in `item_actions.rs` and `combat.rs`), `SPEED`, eye height, spotting range (`14.0`), target sample heights, weapon stats, and consumable stats. Reserve a mechanical `moving_fire_multiplier` field on weapon/unit definitions (unused in the test phase).
+- [x] **Custom loadouts in scenarios.** A scenario may define named loadouts (e.g., `"Marksman"`) composed of catalog item IDs and quantities. A `UnitPlacement` keeps `definition_id` and may select a named scenario loadout or specify an inline loadout; omitting both uses the unit type's `default_loadout`.
+- [x] Validation verifies that custom loadouts reference known catalog items, fit within the unit type's weight/volume capacity, and satisfy basic slot/compatibility rules.
+- [x] Remove hardcoded `"rifle"` / `"rifle-ammo"` / `"frag-grenade"` / `"medical-supply"` / `"ration"` / `"water"` string lookups from simulation loops: resolve IDs to compact indices or typed item tags at `Battle::new`. Fix `Unit::withdrawing()` (`unit.rs`) and `InventoryDisplay.svelte` to inspect the unit's equipped weapon's ammo rather than `"rifle-ammo"`.
+- [x] Track per-slot weapon state (`WeaponState { cooldown, ... }`) so multiple weapons fit without restructuring.
+- [x] Separate **engine structural limits** (memory/safety bounds) from **mode rules** (Skirmish's 8-per-faction cap) so benchmarks and larger modes can exceed 8 per faction.
+- [x] Remove redundant catalog singletons (`Catalog.map`, `Catalog.unit`, `Catalog.weapon`) once the frontend reads the registries.
 
 ### Scenario format v3
 
-- [ ] Bump scenario `schemaVersion` from **2** (current `feature/inventory` format) to **3** (faction definitions, custom scenario loadouts, nullable `timeLimit`, `fireWhileMoving`).
-- [ ] Migrate both v1 and v2 documents in memory on load/import in [scenario-library.ts](apps/web/src/lib/scenario-library.ts) without mutating stored records automatically; add browser tests for v1 and v2 documents in IndexedDB and JSON.
+- [x] Bump scenario `schemaVersion` from **2** (current `feature/inventory` format) to **3** (faction definitions, custom scenario loadouts, nullable `timeLimit`, `fireWhileMoving`).
+- [x] Migrate both v1 and v2 documents in memory on load/import in [scenario-library.ts](apps/web/src/lib/scenario-library.ts) without mutating stored records automatically; add browser tests for v1 and v2 documents in IndexedDB and JSON.
 
 ---
 
@@ -267,8 +267,8 @@ Begin only after Phases 1–2 and after measuring 100 / 1,000 / 5,000 units with
 - [ ] Migrate **every** component fully to Svelte 5 runes (`$state`, `$derived`, `$effect`, `$props`), removing all `export let` and `$:` syntax (`App`, `Skirmish`, `MapMaker`, `DoctrineEditor`, `FactionPanel`, `InventoryDisplay`, `Results`, `UnitPicker`). Migrate one component at a time with browser tests green after each.
 - [ ] Split [Skirmish.svelte](apps/web/src/components/Skirmish.svelte) and [MapMaker.svelte](apps/web/src/components/MapMaker.svelte) into focused subcomponents (setup controls, terrain inspector, action bar, live unit status, map tools, scenario properties).
 - [ ] Split [battlefield.ts](apps/web/src/lib/battlefield.ts) into a shared map view (camera, terrain cache), a battle layer, and an editor overlay.
-- [ ] Update [InventoryDisplay.svelte](apps/web/src/components/InventoryDisplay.svelte) to iterate actual unit inventory entries and equipped weapon ammo rather than `catalog.defaultLoadout` and hardcoded `'rifle-ammo'`.
-- [ ] Drive faction panels, map colours, and results from scenario faction definitions (Phase 3).
+- [x] Update [InventoryDisplay.svelte](apps/web/src/components/InventoryDisplay.svelte) to iterate actual unit inventory entries and equipped weapon ammo rather than `catalog.defaultLoadout` and hardcoded `'rifle-ammo'`.
+- [x] Drive faction panels, map colours, and results from scenario faction definitions (Phase 3).
 
 ---
 

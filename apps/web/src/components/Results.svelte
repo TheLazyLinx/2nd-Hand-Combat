@@ -1,30 +1,30 @@
 ﻿<script lang="ts">
-  import type { BattleResult } from '../lib/types';
+  import { factionColorHex, factionById, factionName } from '../lib/factions';
+  import type { BattleResult, FactionDefinition } from '../lib/types';
   export let result: BattleResult;
-  export let names: string[];
-  export let factions: number[];
+  export let factions: FactionDefinition[];
 </script>
 
 <section class="result">
   <p class="eyebrow">AFTER ACTION REPORT</p>
   <h2>
-    {result.winner === null
-      ? 'Draw'
-      : `${names[factions.indexOf(result.winner)] ?? `Faction ${result.winner}`} wins`}
+    {result.winner === null ? 'Draw' : `${factionName(factions, result.winner)} wins`}
   </h2>
   <p>
     {result.reason === 'timeout'
       ? 'Time limit reached'
       : result.reason === 'simultaneous_elimination'
-        ? 'Both sides eliminated'
-        : 'Opposing force eliminated'} &middot; {result.elapsed.toFixed(1)} seconds
+        ? 'All sides eliminated'
+        : 'Opposing forces eliminated'} &middot; {result.elapsed.toFixed(1)} seconds
   </p>
   <div class="result-grid">
-    {#each result.factions as faction (faction.faction)}
+    {#each result.factions as entry (entry.faction)}
+      {@const def = factionById(factions, entry.faction)}
       <div>
         <strong>
-          {names[factions.indexOf(faction.faction)] ?? `Faction ${faction.faction}`}
-        </strong><span>{faction.survivors} survivors / {faction.casualties} casualties</span>
+          {#if def}<i class="dot" style={`background:${factionColorHex(def.color)}`}></i>{/if}
+          {factionName(factions, entry.faction)}
+        </strong><span>{entry.survivors} survivors / {entry.casualties} casualties</span>
       </div>
     {/each}
   </div>

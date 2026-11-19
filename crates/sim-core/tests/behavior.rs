@@ -16,7 +16,8 @@ fn scenario(a: Point, b: Point) -> Scenario {
     Scenario {
         map,
         seed: 1,
-        factions: vec![0, 1],
+        factions: default_factions(),
+        loadouts: vec![],
         units: vec![
             UnitPlacement {
                 id: 1,
@@ -31,7 +32,9 @@ fn scenario(a: Point, b: Point) -> Scenario {
                     grenades: Default::default(),
                     medical: Default::default(),
                     out_of_ammo_behavior: Default::default(),
+                    fire_while_moving: false,
                 },
+                loadout: None,
             },
             UnitPlacement {
                 id: 2,
@@ -46,10 +49,12 @@ fn scenario(a: Point, b: Point) -> Scenario {
                     grenades: Default::default(),
                     medical: Default::default(),
                     out_of_ammo_behavior: Default::default(),
+                    fire_while_moving: false,
                 },
+                loadout: None,
             },
         ],
-        time_limit: 180.0,
+        time_limit: Some(180.0),
     }
 }
 fn run(b: &mut Battle, n: usize) {
@@ -83,6 +88,7 @@ fn placement_validation_and_empty_setup() {
         definition_id: "infantry".into(),
         position: p(5.5, 5.5),
         doctrine: catalog().default_doctrine,
+        loadout: None,
     });
     s.map.obstacles.push(obstacle(5, 5, 2.4));
     assert!(!validate_scenario(&s, false).valid);
@@ -97,6 +103,7 @@ fn sight_is_blocked_and_not_shared() {
         definition_id: "infantry".into(),
         position: p(6.5, 7.5),
         doctrine: catalog().default_doctrine,
+        loadout: None,
     });
     let mut b = Battle::new(s).unwrap();
     b.step();
@@ -132,7 +139,7 @@ fn doctrine_changes_firing_position() {
 #[test]
 fn same_seed_repeats_and_timeout_is_reported() {
     let mut s = scenario(p(1.5, 1.5), p(30.5, 18.5));
-    s.time_limit = 1.0;
+    s.time_limit = Some(1.0);
     let mut a = Battle::new(s.clone()).unwrap();
     let mut b = Battle::new(s).unwrap();
     run(&mut a, 25);
@@ -153,7 +160,7 @@ fn cover_changes_hit_probability_without_reducing_hit_damage() {
         for (before, after) in previous.units.iter().zip(&next.units) {
             let damage = before.hp - after.hp;
             if damage > 0.0 {
-                assert_eq!(damage, catalog().weapon.damage);
+                assert_eq!(damage, catalog().weapons[0].damage);
                 hit = true;
             }
         }
@@ -205,6 +212,7 @@ fn fallback_uses_safer_cover_before_an_ally() {
         definition_id: "infantry".into(),
         position: p(5.5, 12.5),
         doctrine: catalog().default_doctrine,
+        loadout: None,
     });
     let mut b = Battle::new(s).unwrap();
     // A solid obstacle requires routing around its footprint before reaching protection.
@@ -263,6 +271,7 @@ fn fallback_moves_toward_safer_ally_when_no_cover() {
         definition_id: "infantry".into(),
         position: p(5.5, 12.5),
         doctrine: catalog().default_doctrine,
+        loadout: None,
     });
     let mut b = Battle::new(s).unwrap();
     assert!(run_until(&mut b, 30, |snap| {
@@ -304,6 +313,7 @@ fn fallback_skips_unreachable_cover_for_safer_ally() {
         definition_id: "infantry".into(),
         position: p(5.5, 12.5),
         doctrine: catalog().default_doctrine,
+        loadout: None,
     });
     let mut b = Battle::new(s).unwrap();
     assert!(run_until(&mut b, 30, |snap| {
@@ -339,7 +349,10 @@ fn seeded_combat_reproduces_every_snapshot_through_result() {
         let actual = a.snapshot();
         assert_eq!(actual, b.snapshot());
         shots |= actual.units.iter().any(|u| u.shots_fired > 0);
-        hits |= actual.units.iter().any(|u| u.hp < catalog().unit.max_hp);
+        hits |= actual
+            .units
+            .iter()
+            .any(|u| u.hp < catalog().units[0].max_hp);
         if actual.result.is_some() {
             finished = true;
             break;
@@ -386,8 +399,10 @@ fn rejects_more_than_eight_units_per_faction() {
         u.position = p(id as f64, 5.5);
         s.units.push(u);
     }
-    assert!(!validate_scenario(&s, true).valid);
-    assert!(Battle::new(s).is_err());
+    // Skirmish mode enforces the 8-per-faction cap; core engine permits larger battles.
+    assert!(!validate_skirmish_scenario(&s, true).valid);
+    assert!(validate_scenario(&s, true).valid);
+    assert!(Battle::new(s).is_ok());
 }
 #[test]
 fn sight_includes_fourteen_units_but_not_beyond() {
@@ -404,7 +419,7 @@ fn every_terrain_preset_repeats_snapshots_and_restores_the_same_start() {
     for preset in catalog().maps {
         let mut s = scenario(p(9.5, 9.5), p(22.5, 9.5));
         s.map = preset.map;
-        s.time_limit = 3.0;
+        s.time_limit = Some(3.0);
         s.units[0].doctrine.route_preference = RoutePreference::Protected;
         let mut a = Battle::new(s.clone()).unwrap();
         let initial = a.snapshot();
@@ -420,4 +435,93 @@ fn every_terrain_preset_repeats_snapshots_and_restores_the_same_start() {
         assert_eq!(a.snapshot().result.unwrap().reason, "timeout");
         assert_eq!(Battle::new(s).unwrap().snapshot(), initial);
     }
+}
+
+#[test]
+fn three_faction_battle_continues_until_no_hostile_pair_survives_and_lists_all_factions() {
+    let mut s = scenario(p(4.5, 5.5), p(8.5, 5.5));
+    s.factions.push(FactionDefinition {
+        id: 2,
+        name: "East".into(),
+        color: 0x5d6e37,
+        patrol_direction: PatrolDirection::Forward,
+    });
+    s.units.push(UnitPlacement {
+        id: 3,
+        faction: 2,
+        definition_id: "infantry".into(),
+        position: p(6.5, 8.5),
+        doctrine: s.units[0].doctrine.clone(),
+        loadout: None,
+    });
+    let mut battle = Battle::new(s).unwrap();
+    let mut saw_two_alive_continuing = false;
+    let finished = run_until(&mut battle, 2000, |snap| {
+        let alive_factions = snap.units.iter().filter(|u| u.hp > 0.0).count();
+        if alive_factions == 2 && snap.result.is_none() {
+            saw_two_alive_continuing = true;
+        }
+        snap.result.is_some()
+    });
+    assert!(finished, "3-faction battle should reach elimination");
+    assert!(
+        saw_two_alive_continuing,
+        "battle must continue while two hostile factions remain alive"
+    );
+    let result = battle.snapshot().result.unwrap();
+    assert_eq!(result.factions.len(), 3);
+    assert!(matches!(
+        result.reason.as_str(),
+        "elimination" | "simultaneous_elimination"
+    ));
+}
+
+#[test]
+fn custom_named_and_inline_loadouts_control_starting_gear_and_withdrawal() {
+    let mut s = scenario(p(4.5, 5.5), p(8.5, 5.5));
+    s.loadouts.push(NamedLoadout {
+        name: "TwoRounds".into(),
+        entries: vec![
+            LoadoutEntry {
+                item_id: "rifle".into(),
+                quantity: 1,
+            },
+            LoadoutEntry {
+                item_id: "rifle-ammo".into(),
+                quantity: 2,
+            },
+        ],
+    });
+    s.units[0].loadout = Some(UnitLoadout::Named {
+        name: "TwoRounds".into(),
+    });
+    s.units[0].doctrine.grenades.policy = GrenadePolicy::Never;
+    s.units[0].doctrine.out_of_ammo_behavior = OutOfAmmoBehavior::Withdraw;
+    s.units[1].loadout = Some(UnitLoadout::Inline {
+        entries: vec![LoadoutEntry {
+            item_id: "water".into(),
+            quantity: 1,
+        }],
+    });
+    let mut battle = Battle::new(s).unwrap();
+    let start = battle.snapshot();
+    assert_eq!(start.units[0].inventory.entries.len(), 2);
+    assert_eq!(start.units[1].inventory.entries.len(), 1);
+    assert!(start.units[1].inventory.left_hand.is_none());
+    let withdrew = run_until(&mut battle, 100, |snap| {
+        snap.units[0].shots_fired == 2 && snap.units[0].behavior == Behavior::FallingBack
+    });
+    assert!(
+        withdrew,
+        "unit with 2-round named loadout should fire twice then withdraw"
+    );
+}
+
+#[test]
+fn unlimited_time_limit_does_not_timeout() {
+    let mut s = scenario(p(1.5, 1.5), p(30.5, 18.5));
+    s.time_limit = None;
+    let mut battle = Battle::new(s).unwrap();
+    run(&mut battle, 200);
+    assert!(battle.snapshot().result.is_none());
 }

@@ -22,22 +22,22 @@ pub(crate) fn propose(ctx: &DecisionContext<'_>, scratch: &mut SearchScratch) ->
     let me = ctx.input.unit;
     let enemy = ctx.input.visible_enemy?;
     let engagement_distance = me.placement.doctrine.engagement_distance;
-    let distance = me.position.distance(enemy);
+    let distance = me.nav.position.distance(enemy);
     if distance <= engagement_distance {
         return None;
     }
 
     let ratio = (distance - engagement_distance) / distance;
     let desired = Point {
-        x: me.position.x + (enemy.x - me.position.x) * ratio,
-        y: me.position.y + (enemy.y - me.position.y) * ratio,
+        x: me.nav.position.x + (enemy.x - me.nav.position.x) * ratio,
+        y: me.nav.position.y + (enemy.y - me.nav.position.y) * ratio,
     };
-    if map::travel_time_t(ctx.terrain, me.position, desired).is_some() {
+    if map::travel_time_t(ctx.terrain, me.nav.position, desired).is_some() {
         return Some(Decision::move_to(
             Behavior::Advancing,
             desired,
             None,
-            me.patrol_index,
+            me.nav.patrol_index,
             None,
         ));
     }
@@ -95,11 +95,15 @@ pub(crate) fn propose(ctx: &DecisionContext<'_>, scratch: &mut SearchScratch) ->
                 Behavior::Advancing,
                 chosen.point,
                 None,
-                me.patrol_index,
+                me.nav.patrol_index,
                 Some(route),
             ));
         }
     }
 
-    Some(Decision::hold(Behavior::Engaging, None, me.patrol_index))
+    Some(Decision::hold(
+        Behavior::Engaging,
+        None,
+        me.nav.patrol_index,
+    ))
 }

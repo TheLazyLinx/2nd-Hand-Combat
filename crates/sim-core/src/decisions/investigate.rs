@@ -15,26 +15,26 @@ pub(crate) fn propose(
     scratch: &mut SearchScratch,
 ) -> InvestigateOutcome {
     let me = ctx.input.unit;
-    let Some(memory) = &me.memory else {
+    let Some(memory) = &me.perception.memory else {
         return InvestigateOutcome::None;
     };
     if memory.investigated {
         return InvestigateOutcome::None;
     }
 
-    if map::clear_t(ctx.terrain, me.position, memory.position) {
-        if map::travel_time_t(ctx.terrain, me.position, memory.position).is_some() {
+    if map::clear_t(ctx.terrain, me.nav.position, memory.position) {
+        if map::travel_time_t(ctx.terrain, me.nav.position, memory.position).is_some() {
             return InvestigateOutcome::Decision(Decision::move_to(
                 Behavior::Investigating,
                 memory.position,
                 None,
-                me.patrol_index,
+                me.nav.patrol_index,
                 None,
             ));
         }
         scratch.run_astar(
             ctx.terrain,
-            me.position,
+            me.nav.position,
             memory.position,
             ctx.threats,
             ctx.preference,
@@ -51,7 +51,7 @@ pub(crate) fn propose(
                 Behavior::Investigating,
                 memory.position,
                 None,
-                me.patrol_index,
+                me.nav.patrol_index,
                 Some(route),
             ));
         }
@@ -60,9 +60,9 @@ pub(crate) fn propose(
 
     let params = ctx.search_params();
     let max_radius = TUNING.investigate_max_radius;
-    let spotting_range = TUNING.spotting_range;
+    let spotting_range = me.def.spotting_range;
     let target_pos = memory.position;
-    let start_pos = me.position;
+    let start_pos = me.nav.position;
 
     if let Some(goal) = scratch.run_dijkstra_first_matching(
         ctx.terrain,
@@ -79,7 +79,7 @@ pub(crate) fn propose(
             Behavior::Investigating,
             goal,
             None,
-            me.patrol_index,
+            me.nav.patrol_index,
             Some(route),
         ));
     }
@@ -91,7 +91,7 @@ pub(crate) fn propose(
             Behavior::Investigating,
             target_pos,
             None,
-            me.patrol_index,
+            me.nav.patrol_index,
             Some(route),
         ));
     }

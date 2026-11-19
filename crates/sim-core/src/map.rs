@@ -5,7 +5,7 @@
 //! (solid obstacles block at `>=`, ground blocks at `>`, corner grazing blocks both directions).
 
 use crate::{
-    definitions::{surface_definition, SPEED},
+    definitions::{surface_definition, INFANTRY_SPEC, SPEED},
     terrain::Terrain,
     types::*,
 };
@@ -319,20 +319,21 @@ pub(crate) fn visible_t(t: Terrain<'_>, a: Point, b: Point, ah: f64, bh: f64) ->
 }
 
 pub(crate) fn clear_t(t: Terrain<'_>, a: Point, b: Point) -> bool {
-    visible_t(t, a, b, 1.6, 1.6)
+    visible_t(t, a, b, INFANTRY_SPEC.eye_height, INFANTRY_SPEC.eye_height)
 }
 
 pub(crate) fn shot_fraction_t(t: Terrain<'_>, a: Point, b: Point) -> f64 {
     let ga = t.cache.ground_height(t.map, a);
     let gb = t.cache.ground_height(t.map, b);
     let cuts = breaks(t.map, a, b);
+    let th = INFANTRY_SPEC.target_heights;
     let open = eval_rays_t(
         t,
         a,
         b,
         cuts.as_slice(),
-        [ga + 1.4; 3],
-        [gb + 0.4, gb + 0.9, gb + 1.4],
+        [ga + INFANTRY_SPEC.muzzle_height; 3],
+        [gb + th[0], gb + th[1], gb + th[2]],
         false,
     );
     open.into_iter().filter(|ok| *ok).count() as f64 / 3.0
@@ -347,8 +348,9 @@ fn spotting_cost_with_cuts_t(t: Terrain<'_>, a: Point, b: Point, cuts: &[f64]) -
     let len = a.distance(b);
     let ga = t.cache.ground_height(t.map, a);
     let gb = t.cache.ground_height(t.map, b);
-    let za = ga + 1.6;
-    let zb = gb + 1.6;
+    let eye = INFANTRY_SPEC.eye_height;
+    let za = ga + eye;
+    let zb = gb + eye;
     let is_flat = t.cache.is_flat;
     let mut cost = 0.0;
     for pair in cuts.windows(2) {
@@ -357,7 +359,7 @@ fn spotting_cost_with_cuts_t(t: Terrain<'_>, a: Point, b: Point, cuts: &[f64]) -
         let mut fraction = 0.0;
         if def.veg_height > 0.0 {
             if is_flat {
-                fraction = if def.veg_height >= 1.6 { 1.0 } else { 0.0 };
+                fraction = if def.veg_height >= eye { 1.0 } else { 0.0 };
             } else {
                 let delta = |u: f64| {
                     ground_height(t.map, point(a, b, u)) + def.veg_height - (za + (zb - za) * u)
@@ -385,35 +387,43 @@ fn spotting_cost_with_cuts_t(t: Terrain<'_>, a: Point, b: Point, cuts: &[f64]) -
 
 pub(crate) fn detectable_t(t: Terrain<'_>, a: Point, b: Point, revealed: bool) -> bool {
     let distance = a.distance(b);
-    if distance > 14.0 {
+    let spotting_range = INFANTRY_SPEC.spotting_range;
+    if distance > spotting_range {
         return false;
     }
     let ga = t.cache.ground_height(t.map, a);
     let gb = t.cache.ground_height(t.map, b);
+    let eye = INFANTRY_SPEC.eye_height;
     let cuts = breaks(t.map, a, b);
-    if !eval_rays_t(t, a, b, cuts.as_slice(), [ga + 1.6], [gb + 1.6], true)[0] {
+    if !eval_rays_t(t, a, b, cuts.as_slice(), [ga + eye], [gb + eye], true)[0] {
         return false;
     }
-    revealed || distance <= 2.0 || spotting_cost_with_cuts_t(t, a, b, cuts.as_slice()) <= 14.0 + EPS
+    revealed
+        || distance <= 2.0
+        || spotting_cost_with_cuts_t(t, a, b, cuts.as_slice()) <= spotting_range + EPS
 }
 
 /// Detection multiplied by target exposure, sharing break points and grid traversal for all four rays.
 /// Matches `if detectable_t(t, a, b, revealed) { shot_fraction_t(t, a, b) } else { 0.0 }`.
 pub(crate) fn exposure_t(t: Terrain<'_>, a: Point, b: Point, revealed: bool) -> f64 {
     let distance = a.distance(b);
-    if distance > 14.0 {
+    let spotting_range = INFANTRY_SPEC.spotting_range;
+    if distance > spotting_range {
         return 0.0;
     }
     let ga = t.cache.ground_height(t.map, a);
     let gb = t.cache.ground_height(t.map, b);
+    let eye = INFANTRY_SPEC.eye_height;
+    let muzzle = INFANTRY_SPEC.muzzle_height;
+    let th = INFANTRY_SPEC.target_heights;
     let cuts = breaks(t.map, a, b);
     let open = eval_rays_t(
         t,
         a,
         b,
         cuts.as_slice(),
-        [ga + 1.6, ga + 1.4, ga + 1.4, ga + 1.4],
-        [gb + 1.6, gb + 0.4, gb + 0.9, gb + 1.4],
+        [ga + eye, ga + muzzle, ga + muzzle, ga + muzzle],
+        [gb + eye, gb + th[0], gb + th[1], gb + th[2]],
         true,
     );
     if !open[0] {
@@ -421,7 +431,7 @@ pub(crate) fn exposure_t(t: Terrain<'_>, a: Point, b: Point, revealed: bool) -> 
     }
     if !revealed
         && distance > 2.0
-        && spotting_cost_with_cuts_t(t, a, b, cuts.as_slice()) > 14.0 + EPS
+        && spotting_cost_with_cuts_t(t, a, b, cuts.as_slice()) > spotting_range + EPS
     {
         return 0.0;
     }

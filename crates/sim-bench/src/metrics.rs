@@ -143,7 +143,7 @@ pub fn fingerprint_snapshot(snapshot: &Snapshot) -> u64 {
 
 pub fn run_battle_metrics(scenario: Scenario, max_ticks: u32) -> RunMetrics {
     let seed = scenario.seed;
-    let faction_ids = scenario.factions.clone();
+    let faction_ids: Vec<u32> = scenario.factions.iter().map(|f| f.id).collect();
     let mut battle = Battle::new(scenario).expect("valid standard scenario");
     let initial = battle.snapshot();
 

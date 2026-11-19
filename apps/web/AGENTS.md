@@ -11,8 +11,9 @@ Area guide for Svelte, TypeScript, Worker, and PixiJS frontend work. Follow root
 | `src/lib/types.ts` | Re-exports generated simulation wire types from `src/generated/sim-types.ts` and defines browser-only contracts (`ScenarioDocument`, `WorkerCommand`, `WorkerReply`). Never hand-copy Rust types here. |
 | `src/generated/sim-types.ts` | Auto-generated from `crates/sim-core` via `npm run gen:types`. Never edit by hand. |
 | `src/generated/wasm/` | Auto-generated WASM bindings from `npm run build` / `npm run dev`. Never edit by hand. |
-| `src/lib/battlefield.ts` | `Battlefield`: PixiJS WebGL presentation layer (terrain cache, contours, editor gizmos, camera, interpolated snapshots). Display only — never resolves gameplay. |
-| `src/lib/scenario-library.ts` | IndexedDB scenario library (`2nd-hand-combat` / `scenarios`), 8 MiB JSON import/export, portable envelope validation, and in-memory legacy schema migration (v1 → v2). Leaves gameplay/field validation to Rust. |
+| `src/lib/battlefield.ts` | `Battlefield`: PixiJS WebGL presentation layer (terrain cache, contours, editor gizmos, camera, dynamic faction colours, interpolated snapshots). Display only — never resolves gameplay. |
+| `src/lib/factions.ts` | Faction display helpers (colour hex conversion, lookup, palette generation), unit definition lookup, and setup-screen inventory preview. |
+| `src/lib/scenario-library.ts` | IndexedDB scenario library (`2nd-hand-combat` / `scenarios`), 8 MiB JSON import/export, portable envelope validation, and in-memory legacy schema migration (v1/v2 → v3). Leaves gameplay/field validation to Rust. |
 | `src/lib/editor.ts` | Pure Map Maker helpers (`EditorSession`, `blankDocument`, terrain `paint`, `resizeScenario`, undo/redo snapshots). |
 | `src/App.svelte` | Top-level app shell: home splash, options, screen transitions, and retained Map Maker session state. |
 | `src/components/Skirmish.svelte` | Skirmish setup, preset/library loading, live battle controls, and unit/terrain inspection. |

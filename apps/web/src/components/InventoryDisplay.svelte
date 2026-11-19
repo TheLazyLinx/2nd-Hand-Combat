@@ -17,15 +17,28 @@
     const entry = inventory.entries.find((item) => item.id === id);
     return entry ? itemName(entry.itemId) : `Unknown item #${id}`;
   }
+  $: listedItems = Array.from(new Set(inventory.entries.map((entry) => entry.itemId)));
+  $: equippedAmmoId = (() => {
+    for (const handId of [inventory.leftHand, inventory.rightHand]) {
+      if (handId === null) continue;
+      const entry = inventory.entries.find((item) => item.id === handId);
+      if (!entry) continue;
+      const itemDef = catalog.items.find((item) => item.id === entry.itemId);
+      if (!itemDef?.weaponId) continue;
+      const weapon = catalog.weapons.find((w) => w.id === itemDef.weaponId);
+      if (weapon) return weapon.ammoItemId;
+    }
+    return null;
+  })();
 </script>
 
 <section class="editor inventory" data-testid="inventory">
   <h3>{live ? 'Inventory' : 'Starting inventory'}</h3>
-  <p>{live ? 'Automatic use; loadout fixed' : 'Fixed starting loadout'}</p>
+  <p>{live ? 'Automatic use; loadout fixed' : 'Starting loadout'}</p>
   <ul data-testid="inventory-items">
-    {#each catalog.defaultLoadout as item (item.itemId)}<li>
-        {itemName(item.itemId)}: {quantity(item.itemId)}
-      </li>{/each}
+    {#each listedItems as itemId (itemId)}<li>
+        {itemName(itemId)}: {quantity(itemId)}
+      </li>{:else}<li>Empty</li>{/each}
   </ul>
   <p data-testid="inventory-hands">
     Left hand: {handName(inventory.leftHand)}<br />Right hand: {handName(inventory.rightHand)}
@@ -45,7 +58,7 @@
         2,
       )}
     </p>
-    {#if quantity('rifle-ammo') === 0}<p>Out of ammunition</p>{/if}
+    {#if equippedAmmoId !== null && quantity(equippedAmmoId) === 0}<p>Out of ammunition</p>{/if}
     {#if live.sustainment.nutritionShortage}<p>Nutrition shortage</p>{/if}
     {#if live.sustainment.hydrationShortage}<p>Hydration shortage</p>{/if}
     <p>Item uses</p>

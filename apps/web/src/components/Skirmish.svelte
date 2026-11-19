@@ -2,6 +2,12 @@
   import { onMount, tick } from 'svelte';
   import { BattleClient } from '../lib/client';
   import { Battlefield } from '../lib/battlefield';
+  import {
+    factionColorHex,
+    factionName,
+    previewUnitInventory,
+    unitDefinition,
+  } from '../lib/factions';
   import { listScenarios, type SavedScenario } from '../lib/scenario-library';
   import FactionPanel from './FactionPanel.svelte';
   import DoctrineEditor from './DoctrineEditor.svelte';
@@ -35,7 +41,7 @@
   let phase: 'loading' | 'setup' | 'running' | 'paused' | 'finished' | 'error' = 'loading';
   let error = '';
   let selected: number | null = null;
-  let placement: number | null = null;
+  let placement: { faction: number; definitionId: string } | null = null;
   let modalFaction: number | null = null;
   let busy = false;
   let deployX = 0;
@@ -50,7 +56,6 @@
   let client: BattleClient | null = null;
   let battlefield: Battlefield | null = null;
   let generation = 0;
-  const names = ['North', 'South'];
   const copy = <T,>(value: T): T => structuredClone(value);
   $: selectedUnit = scenario?.units.find((unit) => unit.id === selected) ?? null;
   $: inspected =
@@ -74,7 +79,6 @@
       snapshot,
       selected,
       showHp,
-      catalog.unit.maxHp,
       phase === 'running',
       catalog,
       terrainOverlay,
@@ -97,7 +101,7 @@
       mapId = initialDocument ? 'editor' : (catalog.maps[0]?.id ?? '');
       description = initialDocument?.description ?? catalog.maps[0]?.description ?? '';
       const current = generation;
-      listScenarios(catalog.defaultDoctrine)
+      listScenarios(catalog)
         .then((items) => {
           if (current === generation) saved = items;
         })
@@ -107,10 +111,11 @@
       scenario = initialDocument
         ? copy(initialDocument.scenario)
         : {
-            map: copy(catalog.map),
+            map: copy(catalog.maps[0].map),
             seed: catalog.defaultSeed,
-            factions: [0, 1],
+            factions: copy(catalog.defaultFactions),
             units: [],
+            loadouts: [],
             timeLimit: catalog.defaultTimeLimit,
           };
       snapshot = null;
@@ -194,7 +199,7 @@
       return;
     }
     if (placement !== null) {
-      const faction = placement;
+      const { faction, definitionId } = placement;
       const candidate = copy(scenario);
       const ids = new Set(candidate.units.map((unit) => unit.id));
       let id = 1;
@@ -202,7 +207,7 @@
       candidate.units.push({
         id,
         faction,
-        definitionId: catalog.unit.id,
+        definitionId,
         position: { x: Math.floor(x) + 0.5, y: Math.floor(y) + 0.5 },
         doctrine: copy(catalog.defaultDoctrine),
       });
@@ -250,8 +255,9 @@
       scenario = {
         map: copy(preset.map),
         seed: catalog.defaultSeed,
-        factions: [0, 1],
+        factions: copy(catalog.defaultFactions),
         units: [],
+        loadouts: [],
         timeLimit: catalog.defaultTimeLimit,
       };
     } else if (entry) {
@@ -410,13 +416,14 @@
           bind:this={host}
         ></div>
         <div class="map-bottom">
-          <span><i class="dot north"></i>NORTH</span><span>
-            <i class="dot south"></i>SOUTH
-          </span><span><i class="square cover"></i>LOW OBSTACLE</span><span>
+          {#each scenario?.factions ?? [] as f (f.id)}<span>
+              <i class="dot" style={`background:${factionColorHex(f.color)}`}
+              ></i>{f.name.toUpperCase()}
+            </span>{/each}<span><i class="square cover"></i>LOW OBSTACLE</span><span>
             <i class="square wall"></i>FULL OBSTACLE
           </span><span class="map-hint">
-            {placement !== null
-              ? `CLICK THE MAP TO PLACE ${names[scenario?.factions.indexOf(placement) ?? 0]?.toUpperCase() ?? 'FACTION'} INFANTRY · ESC TO CANCEL`
+            {placement !== null && catalog
+              ? `CLICK THE MAP TO PLACE ${factionName(scenario?.factions ?? [], placement.faction).toUpperCase()} ${unitDefinition(catalog, placement.definitionId).name.toUpperCase()} · ESC TO CANCEL`
               : phase === 'setup'
                 ? 'SELECT A SOLDIER TO EDIT DOCTRINE'
                 : 'AUTONOMOUS COMBAT'}
@@ -564,7 +571,7 @@
             </button>{/if}
         </div>
       </div>
-      {#if result}<Results {result} {names} factions={scenario?.factions ?? [0, 1]} />{/if}
+      {#if result}<Results {result} factions={scenario?.factions ?? []} />{/if}
     </section>
     <aside class="sidebar">
       <div class="sidebar-head">
@@ -572,11 +579,10 @@
         <h2>Deploy units</h2>
         <p>Build each side, then adjust individual doctrine.</p>
       </div>
-      {#each scenario?.factions ?? [0, 1] as faction, side (faction)}
+      {#each scenario?.factions ?? [] as faction, side (faction.id)}
         <FactionPanel
           {faction}
           {side}
-          name={names[side]}
           {scenario}
           {snapshot}
           {catalog}
@@ -588,12 +594,12 @@
             placement = null;
           }}
           onAdd={() => {
-            modalFaction = faction;
+            modalFaction = faction.id;
             placement = null;
           }}
         />
       {/each}
-      {#if catalog && selectedUnit && phase === 'setup'}
+      {#if catalog && scenario && selectedUnit && phase === 'setup'}
         <DoctrineEditor
           unit={selectedUnit}
           {catalog}
@@ -602,10 +608,13 @@
           onChange={doctrine}
           onRemove={removeUnit}
         />
-        <InventoryDisplay {catalog} inventory={catalog.defaultInventory} />
+        <InventoryDisplay
+          {catalog}
+          inventory={previewUnitInventory(catalog, scenario, selectedUnit)}
+        />
       {:else if catalog && selectedUnit && selectedState}
         <section class="editor" data-testid="unit-terrain-status">
-          <h3>Infantry #{selectedUnit.id}</h3>
+          <h3>{unitDefinition(catalog, selectedUnit.definitionId).name} #{selectedUnit.id}</h3>
           <p>
             {selectedState.terrain.surface} | elevation {selectedState.terrain.elevation.toFixed(1)} m
             | Actual movement x{selectedState.terrain.movementMultiplier.toFixed(2)}
@@ -622,12 +631,13 @@
     </aside>
   </div>
 </main>
-{#if modalFaction !== null}
+{#if modalFaction !== null && catalog}
   <UnitPicker
-    name={names[scenario?.factions.indexOf(modalFaction) ?? 0]}
+    name={factionName(scenario?.factions ?? [], modalFaction)}
+    units={catalog.units}
     onClose={() => (modalFaction = null)}
-    onChoose={() => {
-      placement = modalFaction;
+    onChoose={(definitionId) => {
+      placement = { faction: modalFaction!, definitionId };
       modalFaction = null;
       selected = null;
       error = '';

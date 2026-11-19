@@ -13,7 +13,7 @@ export type * from '../generated/sim-types';
 
 export interface ScenarioDocument {
   format: '2nd-hand-combat-scenario';
-  schemaVersion: 2;
+  schemaVersion: 3;
   name: string;
   description: string;
   scenario: Scenario;

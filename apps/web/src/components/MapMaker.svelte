@@ -2,6 +2,13 @@
   import { onMount } from 'svelte';
   import { BattleClient } from '../lib/client';
   import { Battlefield } from '../lib/battlefield';
+  import {
+    factionColorHex,
+    factionName,
+    nextFactionDefinition,
+    parseColorHex,
+    previewUnitInventory,
+  } from '../lib/factions';
   import DoctrineEditor from './DoctrineEditor.svelte';
   import InventoryDisplay from './InventoryDisplay.svelte';
   import {
@@ -26,6 +33,7 @@
   import type {
     Catalog,
     Doctrine,
+    PatrolDirection,
     Point,
     ScenarioAnalysis,
     ScenarioDocument,
@@ -78,6 +86,9 @@
     renameValue = '';
   $: doc = session?.document ?? null;
   $: scenario = doc?.scenario ?? null;
+  $: if (scenario && !scenario.factions.some((f) => f.id === faction)) {
+    faction = scenario.factions[0]?.id ?? 0;
+  }
   $: inspected =
     scenario &&
     analysis &&
@@ -108,7 +119,6 @@
       null,
       selectedUnit?.id ?? null,
       false,
-      catalog.unit.maxHp,
       false,
       catalog,
       terrainOverlay,
@@ -233,7 +243,7 @@
   async function refresh() {
     if (!catalog || disposed) return;
     try {
-      const entries = await listScenarios(catalog.defaultDoctrine);
+      const entries = await listScenarios(catalog);
       if (!disposed) saved = entries;
     } catch (e) {
       if (!disposed) error = e instanceof Error ? e.message : String(e);
@@ -425,7 +435,7 @@
       if (file.size > MAX_DOCUMENT_BYTES)
         throw new Error('Scenario files must be no larger than 8 MiB.');
       if (!client || !catalog) throw new Error('Simulation is not ready.');
-      const document = parseScenarioDocument(await file.text(), catalog.defaultDoctrine);
+      const document = parseScenarioDocument(await file.text(), catalog);
       const result = await client.analyze(document.scenario, revision);
       if (!result.structuralValid)
         throw new Error(result.issues.map((issue) => issue.message).join(' '));
@@ -517,16 +527,16 @@
       session.selection = { kind: 'patrol', index: current.map.patrol.length - 1 };
     } else if (
       session.tool === 'soldier' &&
-      current.units.filter((u) => u.faction === current.factions[faction]).length <
-        catalog.maxPerFaction
+      current.factions.some((f) => f.id === faction) &&
+      current.units.filter((u) => u.faction === faction).length < catalog.maxPerFaction
     ) {
       const ids = new Set(current.units.map((u) => u.id));
       let id = 1;
       while (ids.has(id)) id++;
       current.units.push({
         id,
-        faction: current.factions[faction],
-        definitionId: catalog.unit.id,
+        faction,
+        definitionId: catalog.units[0].id,
         position: { x: Math.floor(point.x) + 0.5, y: Math.floor(point.y) + 0.5 },
         doctrine: copy(catalog.defaultDoctrine),
       });
@@ -664,7 +674,7 @@
         field === 'seed'
           ? 'Seed must be a whole number from 0 to 4294967295.'
           : 'Time limit must be between 1 and 3600 seconds.';
-      input.value = String(scenario[field]);
+      input.value = scenario[field] === null ? '' : String(scenario[field]);
       return;
     }
     edit((d) => {
@@ -701,7 +711,7 @@
       !selectedUnit ||
       !scenario ||
       !catalog ||
-      !scenario.factions.includes(value) ||
+      !scenario.factions.some((f) => f.id === value) ||
       selectedUnit.faction === value
     )
       return;
@@ -713,6 +723,50 @@
     edit((d) => {
       const unit = d.scenario.units.find((unit) => unit.id === id);
       if (unit) unit.faction = value;
+    });
+  }
+  function addFaction() {
+    if (!scenario) return;
+    edit((d) => {
+      d.scenario.factions.push(nextFactionDefinition(d.scenario.factions));
+    });
+  }
+  function removeFaction(id: number) {
+    if (!scenario || scenario.factions.length <= 2) return;
+    edit((d) => {
+      d.scenario.factions = d.scenario.factions.filter((f) => f.id !== id);
+      d.scenario.units = d.scenario.units.filter((u) => u.faction !== id);
+    });
+    if (selectedUnit?.faction === id && session) {
+      session = { ...session, selection: null };
+      publish();
+    }
+  }
+  function renameFaction(id: number, input: HTMLInputElement) {
+    if (!scenario) return;
+    const name = input.value.trim();
+    const existing = scenario.factions.find((f) => f.id === id);
+    if (!existing) return;
+    if (!name || name.length > 64) {
+      error = 'Faction names must be non-empty and at most 64 characters.';
+      input.value = existing.name;
+      return;
+    }
+    edit((d) => {
+      const target = d.scenario.factions.find((f) => f.id === id);
+      if (target) target.name = name;
+    });
+  }
+  function recolorFaction(id: number, hex: string) {
+    edit((d) => {
+      const target = d.scenario.factions.find((f) => f.id === id);
+      if (target) target.color = parseColorHex(hex);
+    });
+  }
+  function setPatrolDirection(id: number, direction: PatrolDirection) {
+    edit((d) => {
+      const target = d.scenario.factions.find((f) => f.id === id);
+      if (target) target.patrolDirection = direction;
     });
   }
   function sizeObstacle(axis: 'width' | 'height', value: number) {
@@ -835,7 +889,9 @@
             </label>{/if}
           {#if session.tool === 'soldier'}<label>
               Faction <select aria-label="Faction" bind:value={faction}>
-                <option value={0}>North</option><option value={1}>South</option>
+                {#each scenario.factions as side (side.id)}<option value={side.id}>
+                    {side.name}
+                  </option>{/each}
               </select>
             </label>{/if}
           <label>
@@ -919,8 +975,8 @@
                 value={selectedUnit.faction}
                 onchange={(e) => changeFaction(Number(e.currentTarget.value))}
               >
-                {#each scenario.factions as side, index (side)}<option value={side}>
-                    {index === 0 ? 'North' : 'South'}
+                {#each scenario.factions as side (side.id)}<option value={side.id}>
+                    {side.name}
                   </option>{/each}
               </select>
             </label>
@@ -934,7 +990,10 @@
             }}
             onChange={changeDoctrine}
             onRemove={removeSelected}
-          /><InventoryDisplay {catalog} inventory={catalog.defaultInventory} />{/if}
+          /><InventoryDisplay
+            {catalog}
+            inventory={previewUnitInventory(catalog, scenario, selectedUnit)}
+          />{/if}
         {#if selectedObstacle}<div class="controls">
             <strong>Obstacle</strong><label>
               Width <input
@@ -1038,10 +1097,42 @@
             Time limit <input
               type="number"
               min="1"
-              value={scenario.timeLimit}
+              value={scenario.timeLimit ?? ''}
               onchange={(e) => changeNumber('timeLimit', e.currentTarget)}
             />
           </label>
+        </section>
+        <section aria-label="Factions">
+          <h2>Factions</h2>
+          {#each scenario.factions as side (side.id)}<div
+              class="faction-row"
+              data-testid={`editor-faction-${side.id}`}
+            >
+              <input
+                aria-label={`Faction ${side.name} color`}
+                type="color"
+                value={factionColorHex(side.color)}
+                onchange={(e) => recolorFaction(side.id, e.currentTarget.value)}
+              /><input
+                aria-label={`Faction ${side.id} name`}
+                maxlength="64"
+                value={side.name}
+                onchange={(e) => renameFaction(side.id, e.currentTarget)}
+              /><select
+                aria-label={`Faction ${side.name} patrol direction`}
+                value={side.patrolDirection}
+                onchange={(e) =>
+                  setPatrolDirection(side.id, e.currentTarget.value as PatrolDirection)}
+              >
+                <option value="forward">Forward</option><option value="reverse">Reverse</option>
+              </select><button
+                disabled={scenario.factions.length <= 2}
+                onclick={() => removeFaction(side.id)}
+              >
+                Remove
+              </button>
+            </div>{/each}
+          <button onclick={addFaction}>Add faction</button>
         </section>
         <section>
           <h2>Map size</h2>
@@ -1089,7 +1180,7 @@
               }}
             >
               #{unit.id}
-              {unit.faction === scenario.factions[0] ? 'North' : 'South'}
+              {factionName(scenario.factions, unit.faction)}
             </button>{/each}
           <h2>Patrol</h2>
           {#each scenario.map.patrol as point, index (index)}<button
@@ -1324,6 +1415,22 @@
   .library-item strong {
     display: block;
     margin-bottom: 0.4rem;
+  }
+  .faction-row {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin: 0.4rem 0;
+    flex-wrap: wrap;
+  }
+  .faction-row input[type='color'] {
+    width: 2rem;
+    height: 2rem;
+    padding: 0;
+  }
+  .faction-row input:not([type='color']) {
+    flex: 1 1 5.5rem;
+    min-width: 0;
   }
   .modal {
     position: fixed;

@@ -1,8 +1,8 @@
 //! Tactical doctrine evaluation coordinator: gathers typed proposals from per-behaviour modules
 //! (`fallback`, `engage`, `reposition`, `investigate`, `patrol`) without mutating world state.
 //!
-//! Invariant: decisions read only immutable unit perception/memory/doctrine and terrain queries;
-//! `battle.rs` applies the returned `Decision` intention.
+//! Invariant: decisions read only immutable unit perception/memory/doctrine, faction patrol
+//! direction, and terrain queries; `battle.rs` applies the returned `Decision` intention.
 
 mod engage;
 mod fallback;
@@ -74,7 +74,7 @@ impl Decision {
 pub(crate) struct DecisionContext<'a> {
     pub input: &'a DecisionInput<'a>,
     pub terrain: Terrain<'a>,
-    pub faction_index: usize,
+    pub patrol_direction: PatrolDirection,
     pub threat: Option<Point>,
     pub threats: &'a [Point],
     pub preference: RoutePreference,
@@ -84,7 +84,7 @@ pub(crate) struct DecisionContext<'a> {
 impl<'a> DecisionContext<'a> {
     pub(crate) fn search_params(&self) -> SearchParams<'a> {
         SearchParams {
-            start: self.input.unit.position,
+            start: self.input.unit.nav.position,
             threats: self.threats,
             preference: self.preference,
             revealed: self.revealed,
@@ -106,36 +106,40 @@ pub(crate) fn grid_window(map: &ArenaMap, center: Point, radius: f64) -> (u32, u
 }
 
 #[cfg(test)]
-pub(crate) fn decide(input: &DecisionInput<'_>, map: &ArenaMap, faction_index: usize) -> Decision {
+pub(crate) fn decide(
+    input: &DecisionInput<'_>,
+    map: &ArenaMap,
+    patrol_direction: PatrolDirection,
+) -> Decision {
     let cache = TerrainCache::new(map);
     let mut scratch = SearchScratch::new(cache.width, cache.height);
-    decide_with(input, cache.view(map), &mut scratch, faction_index)
+    decide_with(input, cache.view(map), &mut scratch, patrol_direction)
 }
 
 pub(crate) fn decide_with(
     input: &DecisionInput<'_>,
     terrain: Terrain<'_>,
     scratch: &mut SearchScratch,
-    faction_index: usize,
+    patrol_direction: PatrolDirection,
 ) -> Decision {
     let me = input.unit;
     let threat = input
         .visible_enemy
-        .or_else(|| me.memory.as_ref().map(|m| m.position));
+        .or_else(|| me.perception.memory.as_ref().map(|m| m.position));
     let fallback_threat = threat;
-    let threats = if me.known_threats.is_empty() {
+    let threats = if me.perception.known_threats.is_empty() {
         fallback_threat.as_slice()
     } else {
-        me.known_threats.as_slice()
+        me.perception.known_threats.as_slice()
     };
     let ctx = DecisionContext {
         input,
         terrain,
-        faction_index,
+        patrol_direction,
         threat,
         threats,
         preference: me.placement.doctrine.route_preference,
-        revealed: input.tick < me.revealed_until,
+        revealed: input.tick < me.combat.revealed_until,
     };
 
     if let Some(decision) = fallback::propose(&ctx, scratch) {
@@ -175,6 +179,7 @@ mod acceptance_tests {
             definition_id: "infantry".into(),
             position: at,
             doctrine: catalog().default_doctrine,
+            loadout: None,
         })
     }
     fn choose(unit: &Unit, map: &ArenaMap, enemy: Option<Point>) -> Decision {
@@ -187,7 +192,7 @@ mod acceptance_tests {
                 visible_enemy_revealed: false,
             },
             map,
-            0,
+            PatrolDirection::Forward,
         )
     }
     #[test]
@@ -208,7 +213,7 @@ mod acceptance_tests {
         assert!(!map::blocked(&map, goal));
         assert!(goal.distance(enemy) <= 4.0);
         let mut route = d.route.unwrap();
-        let mut pos = u.position;
+        let mut pos = u.nav.position;
         for _ in 0..200 {
             pos = route.advance(&map, pos, 0.05);
         }
@@ -227,7 +232,7 @@ mod acceptance_tests {
         });
         let mut u = unit(p(5.5, 5.5));
         let enemy = p(9.5, 5.5);
-        u.memory = Some(Memory {
+        u.perception.memory = Some(Memory {
             position: enemy,
             tick: 0,
             investigated: false,
@@ -237,7 +242,7 @@ mod acceptance_tests {
         assert_ne!(goal, enemy);
         assert!(map::detectable(&map, goal, enemy, false));
         let mut route = d.route.unwrap();
-        let mut pos = u.position;
+        let mut pos = u.nav.position;
         for _ in 0..250 {
             pos = route.advance(&map, pos, 0.05);
         }
@@ -256,7 +261,7 @@ mod acceptance_tests {
             height_metres: 2.5,
         });
         let mut u = unit(p(5.5, 5.5));
-        u.memory = Some(Memory {
+        u.perception.memory = Some(Memory {
             position: p(9.5, 5.5),
             tick: 0,
             investigated: false,
@@ -282,18 +287,18 @@ mod acceptance_tests {
         let d = choose(&u, &map, Some(enemy));
         let goal = d.goal.unwrap();
         assert!(
-            map::shot_fraction(&map, enemy, goal) < map::shot_fraction(&map, enemy, u.position)
+            map::shot_fraction(&map, enemy, goal) < map::shot_fraction(&map, enemy, u.nav.position)
         );
         let mut route = d.route.unwrap();
-        u.fallback_goal = Some(goal);
-        u.fallback_threat = Some(enemy);
+        u.nav.fallback_goal = Some(goal);
+        u.nav.fallback_threat = Some(enemy);
         for _ in 0..200 {
-            u.position = route.advance(&map, u.position, 0.05);
-            if u.position.distance(goal) > 0.3 {
+            u.nav.position = route.advance(&map, u.nav.position, 0.05);
+            if u.nav.position.distance(goal) > 0.3 {
                 assert_eq!(choose(&u, &map, Some(enemy)).goal, Some(goal));
             }
         }
-        assert!(u.position.distance(goal) < 0.001);
+        assert!(u.nav.position.distance(goal) < 0.001);
     }
     #[test]
     fn hidden_enemy_is_not_used_without_memory() {
@@ -336,12 +341,12 @@ mod acceptance_tests {
         );
         let mut moving = u.clone();
         moving.placement.doctrine.position_preference = PositionPreference::Cover;
-        moving.behavior = Behavior::Advancing;
-        moving.goal = Some(cover);
+        moving.combat.behavior = Behavior::Advancing;
+        moving.nav.goal = Some(cover);
         let mut cover_route = cover_decision.route.clone().unwrap();
         for _ in 0..20 {
-            moving.position = cover_route.advance(&map, moving.position, 0.05);
-            if moving.position.distance(cover) > 0.2 {
+            moving.nav.position = cover_route.advance(&map, moving.nav.position, 0.05);
+            if moving.nav.position.distance(cover) > 0.2 {
                 assert_eq!(choose(&moving, &map, Some(enemy)).goal, Some(cover));
             }
         }
@@ -349,7 +354,7 @@ mod acceptance_tests {
             (cover, cover_decision.route.unwrap()),
             (concealed, concealed_decision.route.unwrap()),
         ] {
-            let mut pos = u.position;
+            let mut pos = u.nav.position;
             for _ in 0..100 {
                 pos = route.advance(&map, pos, 0.05);
             }
@@ -368,5 +373,25 @@ mod acceptance_tests {
         u.placement.doctrine.out_of_ammo_behavior = OutOfAmmoBehavior::ContinueDoctrine;
         let continued = choose(&u, &map, Some(p(10.5, 5.5)));
         assert_eq!(continued.behavior, Behavior::Engaging);
+    }
+    #[test]
+    fn patrol_follows_faction_patrol_direction() {
+        let mut map = arena();
+        map.patrol = vec![p(2.5, 2.5), p(6.5, 2.5), p(10.5, 2.5)];
+        let mut u = unit(p(6.5, 2.5));
+        u.nav.patrol_index = 1;
+        let input = DecisionInput {
+            unit: &u,
+            visible_enemy: None,
+            allies: vec![],
+            tick: 1,
+            visible_enemy_revealed: false,
+        };
+        let forward = decide(&input, &map, PatrolDirection::Forward);
+        let reverse = decide(&input, &map, PatrolDirection::Reverse);
+        assert_eq!(forward.patrol_index, 2);
+        assert_eq!(forward.goal, Some(p(10.5, 2.5)));
+        assert_eq!(reverse.patrol_index, 0);
+        assert_eq!(reverse.goal, Some(p(2.5, 2.5)));
     }
 }
