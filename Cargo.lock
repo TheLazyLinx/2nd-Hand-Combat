@@ -94,6 +94,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sim-bench"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sim-core",
+]
+
+[[package]]
 name = "sim-core"
 version = "0.1.0"
 dependencies = [

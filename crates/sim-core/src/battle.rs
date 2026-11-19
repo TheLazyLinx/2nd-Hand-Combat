@@ -5,6 +5,109 @@ use crate::{
     validation::validate_scenario,
 };
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StepTimings {
+    pub sustainment_ns: u64,
+    pub perception_ns: u64,
+    pub decisions_ns: u64,
+    pub movement_ns: u64,
+    pub post_perception_ns: u64,
+    pub item_actions_ns: u64,
+    pub combat_ns: u64,
+    pub results_ns: u64,
+}
+impl StepTimings {
+    pub fn total_ns(&self) -> u64 {
+        self.sustainment_ns
+            + self.perception_ns
+            + self.decisions_ns
+            + self.movement_ns
+            + self.post_perception_ns
+            + self.item_actions_ns
+            + self.combat_ns
+            + self.results_ns
+    }
+}
+
+pub(crate) trait StepTimer {
+    fn mark_sustainment(&mut self);
+    fn mark_perception(&mut self);
+    fn mark_decisions(&mut self);
+    fn mark_movement(&mut self);
+    fn mark_post_perception(&mut self);
+    fn mark_item_actions(&mut self);
+    fn mark_combat(&mut self);
+    fn mark_results(&mut self);
+}
+
+pub(crate) struct NoopTimer;
+impl StepTimer for NoopTimer {
+    #[inline(always)]
+    fn mark_sustainment(&mut self) {}
+    #[inline(always)]
+    fn mark_perception(&mut self) {}
+    #[inline(always)]
+    fn mark_decisions(&mut self) {}
+    #[inline(always)]
+    fn mark_movement(&mut self) {}
+    #[inline(always)]
+    fn mark_post_perception(&mut self) {}
+    #[inline(always)]
+    fn mark_item_actions(&mut self) {}
+    #[inline(always)]
+    fn mark_combat(&mut self) {}
+    #[inline(always)]
+    fn mark_results(&mut self) {}
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct RealTimer {
+    last: std::time::Instant,
+    timings: StepTimings,
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl RealTimer {
+    fn new() -> Self {
+        Self {
+            last: std::time::Instant::now(),
+            timings: StepTimings::default(),
+        }
+    }
+    fn lap(&mut self) -> u64 {
+        let now = std::time::Instant::now();
+        let elapsed = now.duration_since(self.last).as_nanos() as u64;
+        self.last = now;
+        elapsed
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl StepTimer for RealTimer {
+    fn mark_sustainment(&mut self) {
+        self.timings.sustainment_ns = self.lap();
+    }
+    fn mark_perception(&mut self) {
+        self.timings.perception_ns = self.lap();
+    }
+    fn mark_decisions(&mut self) {
+        self.timings.decisions_ns = self.lap();
+    }
+    fn mark_movement(&mut self) {
+        self.timings.movement_ns = self.lap();
+    }
+    fn mark_post_perception(&mut self) {
+        self.timings.post_perception_ns = self.lap();
+    }
+    fn mark_item_actions(&mut self) {
+        self.timings.item_actions_ns = self.lap();
+    }
+    fn mark_combat(&mut self) {
+        self.timings.combat_ns = self.lap();
+    }
+    fn mark_results(&mut self) {
+        self.timings.results_ns = self.lap();
+    }
+}
+
 pub struct Battle {
     scenario: Scenario,
     units: Vec<Unit>,
@@ -38,7 +141,19 @@ impl Battle {
             result: None,
         })
     }
+    pub fn is_finished(&self) -> bool {
+        self.result.is_some()
+    }
     pub fn step(&mut self) {
+        self.step_with(&mut NoopTimer);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn step_profiled(&mut self) -> StepTimings {
+        let mut timer = RealTimer::new();
+        self.step_with(&mut timer);
+        timer.timings
+    }
+    fn step_with<T: StepTimer>(&mut self, timer: &mut T) {
         if self.result.is_some() {
             return;
         }
@@ -46,6 +161,7 @@ impl Battle {
         for u in &mut self.units {
             crate::sustainment::advance(u);
         }
+        timer.mark_sustainment();
         // Sight is refreshed every tick independently for each living unit.
         let observations: Vec<_> = (0..self.units.len())
             .map(|i| {
@@ -117,6 +233,7 @@ impl Battle {
                 }
             }
         }
+        timer.mark_perception();
         let decisions: Vec<_> = (0..self.units.len())
             .map(|i| {
                 if self.units[i].hp <= 0.0 || (self.tick % 10 != 1 && !self.units[i].needs_decision)
@@ -177,14 +294,18 @@ impl Battle {
                 };
             }
         }
+        timer.mark_decisions();
         crate::movement::execute(&mut self.units, &self.scenario.map, self.tick);
-        crate::combat::execute(
+        timer.mark_movement();
+        crate::combat::execute_with_timer(
             &mut self.units,
             &self.scenario.map,
             &mut self.rng,
             self.tick,
+            timer,
         );
         self.result = crate::results::evaluate(&self.scenario, &self.units, self.tick);
+        timer.mark_results();
     }
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {

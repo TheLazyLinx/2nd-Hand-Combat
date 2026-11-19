@@ -8,6 +8,8 @@ mod item_actions;
 mod map;
 mod movement;
 mod navigation;
+#[cfg(test)]
+mod oracles;
 mod perception;
 mod results;
 mod sustainment;
@@ -15,7 +17,7 @@ mod types;
 mod unit;
 mod validation;
 
-pub use battle::Battle;
+pub use battle::{Battle, StepTimings};
 pub use definitions::catalog;
 pub use types::*;
 pub use validation::{analyze_scenario, validate_scenario};

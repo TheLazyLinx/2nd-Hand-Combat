@@ -1,5 +1,17 @@
-use crate::{item_actions::Action, map, perception, types::*, unit::Unit};
+use crate::{battle::StepTimer, item_actions::Action, map, perception, types::*, unit::Unit};
+
+#[cfg(test)]
 pub(crate) fn execute(units: &mut [Unit], map: &ArenaMap, rng: &mut u64, tick: u32) {
+    execute_with_timer(units, map, rng, tick, &mut crate::battle::NoopTimer);
+}
+
+pub(crate) fn execute_with_timer<T: StepTimer>(
+    units: &mut [Unit],
+    map: &ArenaMap,
+    rng: &mut u64,
+    tick: u32,
+    timer: &mut T,
+) {
     let observations: Vec<_> = (0..units.len())
         .map(|i| {
             if units[i].hp > 0.0 {
@@ -14,7 +26,9 @@ pub(crate) fn execute(units: &mut [Unit], map: &ArenaMap, rng: &mut u64, tick: u
             u.last_contact = tick;
         }
     }
+    timer.mark_post_perception();
     let actions = crate::item_actions::select(units, map, tick, &observations);
+    timer.mark_item_actions();
     let mut damage = vec![0.0; units.len()];
     let mut heals = vec![false; units.len()];
     for (i, action) in actions.into_iter().enumerate() {
@@ -101,6 +115,7 @@ pub(crate) fn execute(units: &mut [Unit], map: &ArenaMap, rng: &mut u64, tick: u
             u.goal = None;
         }
     }
+    timer.mark_combat();
 }
 #[cfg(test)]
 mod tests {

@@ -24,7 +24,7 @@ Available checks and production commands:
 
 ```sh
 npm run verify:fast     # Fast verification: Rust, web lint/fmt, boundaries, privacy, build, type checks, smoke e2e
-npm run verify          # Full pre-merge verification: everything in verify:fast plus cargo-deny and all browser tests
+npm run verify          # Full pre-merge verification: verify:fast plus cargo-deny, quick benchmark, and all browser tests
 npm run build           # Build WASM and the production site in dist/
 npm run preview         # Serve an existing production build locally
 npm run check           # Svelte and TypeScript checks
@@ -34,10 +34,13 @@ npm run lint:web        # ESLint (including module boundary rules)
 npm run test:boundaries # Regression tests for ESLint boundary rules
 npm run gen:types       # Regenerate apps/web/src/generated/sim-types.ts from crates/sim-core
 npm run check:types-sync # Verify generated TypeScript types match crates/sim-core
-npm run test:rust       # Native Rust tests (including sim-core boundary and TS contract tests)
+npm run test:rust       # Native Rust tests (unit, behavior, oracles, doctrine suite, boundaries, TS contract)
 npm run lint:rust       # Clippy
 npm run fmt:check       # Rust formatting check
 npm run deny:rust       # Rust dependency licence, advisory, and source check
+npm run bench:rust      # Native release benchmark suite with per-stage timing breakdown
+npm run bench:rust:quick # Quick native release benchmark smoke run (used by npm run verify)
+npm run report:doctrine # Headless multi-seed doctrine comparison report (13 scenarios x 10 seeds)
 npm run test:e2e        # Build and run all Playwright browser tests
 npm run test:e2e:fast   # Build and run non-stress Playwright browser tests
 ```
