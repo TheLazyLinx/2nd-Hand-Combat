@@ -1,8 +1,14 @@
 ﻿<script lang="ts">
+  /** After-action battle results summary displaying winner/draw, reason, and per-faction counts. */
   import { factionColorHex, factionById, factionName } from '../lib/factions';
   import type { BattleResult, FactionDefinition } from '../lib/types';
-  export let result: BattleResult;
-  export let factions: FactionDefinition[];
+
+  interface Props {
+    result: BattleResult;
+    factions: FactionDefinition[];
+  }
+
+  let { result, factions }: Props = $props();
 </script>
 
 <section class="result">

@@ -1,33 +1,37 @@
 <script lang="ts">
+  /**
+   * MapMaker orchestrator component: manages editor session, undo/redo, Worker terrain analysis,
+   * IndexedDB scenario library persistence, canvas gestures, and delegates UI panels to maker/*.svelte.
+   */
   import { onMount } from 'svelte';
-  import { BattleClient } from '../lib/client';
+  import '../maker.css';
   import { Battlefield } from '../lib/battlefield';
+  import { BattleClient } from '../lib/client';
   import {
-    factionColorHex,
-    factionName,
-    nextFactionDefinition,
-    parseColorHex,
-    previewUnitInventory,
-  } from '../lib/factions';
-  import DoctrineEditor from './DoctrineEditor.svelte';
-  import InventoryDisplay from './InventoryDisplay.svelte';
-  import {
+    applyBrushStroke,
     blankDocument,
     copy,
     createSession,
+    dragSelection,
     fingerprint,
-    paint,
+    isBrushTool,
+    moveSelectedAxis,
+    pickSelection,
+    placeObstacle,
+    placeSoldier,
+    resizeObstacleAxis,
     resizeScenario,
     type EditorSession,
     type EditorTool,
   } from '../lib/editor';
+  import { nextFactionDefinition, parseColorHex } from '../lib/factions';
   import {
-    listScenarios,
-    saveScenario,
-    deleteScenario,
-    parseScenarioDocument,
-    downloadScenario,
     MAX_DOCUMENT_BYTES,
+    deleteScenario,
+    downloadScenario,
+    listScenarios,
+    parseScenarioDocument,
+    saveScenario,
     type SavedScenario,
   } from '../lib/scenario-library';
   import type {
@@ -40,81 +44,102 @@
     Surface,
     WorkerReply,
   } from '../lib/types';
+  import MakerDialogs from './maker/MakerDialogs.svelte';
+  import MakerSelectionPanel from './maker/MakerSelectionPanel.svelte';
+  import MakerSidebar from './maker/MakerSidebar.svelte';
+  import MakerToolbar from './maker/MakerToolbar.svelte';
 
-  export let session: EditorSession | null;
-  export let onSession: (session: EditorSession) => void;
-  export let onTest: (document: ScenarioDocument) => void;
-  export let onBack: () => void;
-
-  let catalog: Catalog | null = null,
-    analysis: ScenarioAnalysis | null = null;
-  let client: BattleClient | null = null,
-    battlefield: Battlefield | null = null,
-    host: HTMLElement;
-  let saved: SavedScenario[] = [],
-    error = '',
-    analysisError = '',
-    pending = false,
-    revision = 0,
-    analyzedRevision = -1,
-    disposed = false;
-  let surface: Surface = 'open',
-    amount = 0.5,
-    setValue = 0,
-    obstacleHeight = 0.9,
-    faction = 0,
-    brushRadius = 0;
-  let terrainOverlay = true,
-    inspectX = 0,
-    inspectY = 0,
-    lastTimeLimit = 600;
-  let lastPoint: Point | null = null;
-  let x = 0,
-    y = 0,
-    width = 32,
-    height = 20,
-    newWidth = 32,
-    newHeight = 20,
-    resizePreview = false,
-    importInput: HTMLInputElement;
-  let gestureBefore: ScenarioDocument | null = null,
-    gestureStart: Point | null = null,
-    visited = new Set<string>();
-  let guardAction: (() => void) | null = null;
-  let documentGeneration = 0;
-  let deleteId: string | null = null,
-    renameId: string | null = null,
-    renameValue = '';
-  $: doc = session?.document ?? null;
-  $: scenario = doc?.scenario ?? null;
-  $: if (scenario && !scenario.factions.some((f) => f.id === faction)) {
-    faction = scenario.factions[0]?.id ?? 0;
+  interface Props {
+    session: EditorSession | null;
+    onSession: (session: EditorSession) => void;
+    onTest: (document: ScenarioDocument) => void;
+    onBack: () => void;
   }
-  $: inspected =
+
+  let { session: initialSession, onSession, onTest, onBack }: Props = $props();
+
+  let session = $state.raw<EditorSession | null>(null);
+  let catalog = $state.raw<Catalog | null>(null);
+  let analysis = $state.raw<ScenarioAnalysis | null>(null);
+  let client = $state.raw<BattleClient | null>(null);
+  let battlefield = $state.raw<Battlefield | null>(null);
+  let saved = $state.raw<SavedScenario[]>([]);
+  let guardAction = $state.raw<(() => void) | null>(null);
+
+  let host: HTMLElement;
+  let error = $state('');
+  let analysisError = $state('');
+  let pending = $state(false);
+  let revision = $state(0);
+  let analyzedRevision = $state(-1);
+  let surface = $state<Surface>('open');
+  let amount = $state(0.5);
+  let setValue = $state(0);
+  let obstacleHeight = $state(0.9);
+  let faction = $state(0);
+  let brushRadius = $state(0);
+  let terrainOverlay = $state(true);
+  let inspectX = $state(0);
+  let inspectY = $state(0);
+  let x = $state(0);
+  let y = $state(0);
+  let width = $state(32);
+  let height = $state(20);
+  let newWidth = $state(32);
+  let newHeight = $state(20);
+  let resizePreview = $state(false);
+  let deleteId = $state<string | null>(null);
+  let renameId = $state<string | null>(null);
+  let renameValue = $state('');
+
+  let disposed = false;
+  let lastTimeLimit = 600;
+  let documentGeneration = 0;
+  let lastPoint: Point | null = null;
+  let gestureBefore: ScenarioDocument | null = null;
+  let gestureStart: Point | null = null;
+  let visited = new Set<string>();
+
+  const doc = $derived(session?.document ?? null);
+  const scenario = $derived(doc?.scenario ?? null);
+  const dirty = $derived(!!session && fingerprint(session.document) !== session.savedSnapshot);
+  const inspected = $derived(
     scenario &&
-    analysis &&
-    Number.isInteger(inspectX) &&
-    Number.isInteger(inspectY) &&
-    inspectX >= 0 &&
-    inspectY >= 0 &&
-    inspectX < scenario.map.width &&
-    inspectY < scenario.map.height
+      analysis &&
+      Number.isInteger(inspectX) &&
+      Number.isInteger(inspectY) &&
+      inspectX >= 0 &&
+      inspectY >= 0 &&
+      inspectX < scenario.map.width &&
+      inspectY < scenario.map.height
       ? analysis.cells[inspectY * scenario.map.width + inspectX]
-      : null;
-  $: dirty = !!session && fingerprint(session.document) !== session.savedSnapshot;
-  $: selectedUnit =
+      : null,
+  );
+  const selectedUnit = $derived(
     session?.selection?.kind === 'unit'
       ? (scenario?.units.find((u) => u.id === session?.selection?.index) ?? null)
-      : null;
-  $: selectedObstacle =
+      : null,
+  );
+  const selectedObstacle = $derived(
     session?.selection?.kind === 'obstacle'
       ? (scenario?.map.obstacles[session.selection.index] ?? null)
-      : null;
-  $: selectedPatrol =
-    session?.selection?.kind === 'patrol'
-      ? (scenario?.map.patrol[session.selection.index] ?? null)
-      : null;
-  $: if (battlefield && scenario && catalog && session) {
+      : null,
+  );
+  const selectedPatrolIndex = $derived(
+    session?.selection?.kind === 'patrol' ? session.selection.index : null,
+  );
+  const selectedPatrol = $derived(
+    selectedPatrolIndex !== null ? (scenario?.map.patrol[selectedPatrolIndex] ?? null) : null,
+  );
+
+  $effect(() => {
+    if (scenario && !scenario.factions.some((f) => f.id === faction)) {
+      faction = scenario.factions[0]?.id ?? 0;
+    }
+  });
+
+  $effect(() => {
+    if (!battlefield || !scenario || !catalog || !session) return;
     battlefield.update(
       scenario,
       null,
@@ -149,21 +174,22 @@
           : undefined,
       selection: session.selection,
     });
-  }
+  });
+
   function publish() {
-    if (session) {
-      session.settings = {
-        surface,
-        amount,
-        setValue,
-        obstacleHeight,
-        faction,
-        brushRadius,
-        terrainOverlay,
-      };
-      onSession(session);
-    }
+    if (!session) return;
+    session.settings = {
+      surface,
+      amount,
+      setValue,
+      obstacleHeight,
+      faction,
+      brushRadius,
+      terrainOverlay,
+    };
+    onSession(session);
   }
+
   function changed(before: ScenarioDocument) {
     if (!session || fingerprint(before) === fingerprint(session.document)) return;
     session.undo = [...session.undo.slice(-99), before];
@@ -172,13 +198,15 @@
     publish();
     requestAnalysis();
   }
-  function edit(fn: (doc: ScenarioDocument) => void) {
+
+  function edit(fn: (d: ScenarioDocument) => void) {
     if (!session) return;
     const before = copy(session.document);
     session.document = copy(session.document);
     fn(session.document);
     changed(before);
   }
+
   function undo() {
     if (!session?.undo.length) return;
     const previous = session.undo[session.undo.length - 1];
@@ -192,6 +220,7 @@
     publish();
     requestAnalysis();
   }
+
   function redo() {
     if (!session?.redo.length) return;
     const next = session.redo[session.redo.length - 1];
@@ -205,15 +234,17 @@
     publish();
     requestAnalysis();
   }
+
   function requestAnalysis() {
     revision++;
     analysis = null;
     if (!pending) void analyze();
   }
+
   async function analyze() {
     if (!session || !client || !catalog || disposed) return;
-    const current = revision,
-      candidate = copy(session.document.scenario);
+    const current = revision;
+    const candidate = copy(session.document.scenario);
     pending = true;
     try {
       const result = await client.analyze(candidate, current);
@@ -223,13 +254,15 @@
         analysisError = '';
       }
     } catch (e) {
-      if (!disposed && current === revision)
+      if (!disposed && current === revision) {
         analysisError = e instanceof Error ? e.message : String(e);
+      }
     } finally {
       pending = false;
       if (!disposed && current !== revision) void analyze();
     }
   }
+
   function receive(message: WorkerReply) {
     if (message.type === 'ready') {
       catalog = message.catalog;
@@ -240,8 +273,11 @@
       publish();
       requestAnalysis();
       void refresh();
-    } else if (message.type === 'error') error = message.message;
+    } else if (message.type === 'error') {
+      error = message.message;
+    }
   }
+
   async function refresh() {
     if (!catalog || disposed) return;
     try {
@@ -251,11 +287,16 @@
       if (!disposed) error = e instanceof Error ? e.message : String(e);
     }
   }
+
   onMount(() => {
     let active = true;
-    if (session?.settings)
-      ({ surface, amount, setValue, obstacleHeight, faction, brushRadius, terrainOverlay } =
-        session.settings);
+    if (initialSession) {
+      session = initialSession;
+      if (initialSession.settings) {
+        ({ surface, amount, setValue, obstacleHeight, faction, brushRadius, terrainOverlay } =
+          initialSession.settings);
+      }
+    }
     const beforeUnload = (event: BeforeUnloadEvent) => {
       if (dirty) {
         event.preventDefault();
@@ -282,9 +323,9 @@
         battlefield = new Battlefield(
           host,
           () => {},
-          (x, y) => {
-            inspectX = x;
-            inspectY = y;
+          (cx, cy) => {
+            inspectX = cx;
+            inspectY = cy;
           },
         );
         await battlefield.init();
@@ -304,6 +345,7 @@
       battlefield?.destroy();
     };
   });
+
   function exportDocument() {
     if (!doc) return;
     try {
@@ -312,18 +354,20 @@
       error = e instanceof Error ? e.message : String(e);
     }
   }
+
   function guard(action: () => void) {
     if (dirty) guardAction = action;
     else action();
   }
+
   async function save(asNew = false): Promise<boolean> {
     if (!session || !analysis || analyzedRevision !== revision || !analysis.structuralValid) {
       error = 'Wait for validation and fix structural errors before saving.';
       return false;
     }
     try {
-      const generation = documentGeneration,
-        candidate = copy(session.document);
+      const generation = documentGeneration;
+      const candidate = copy(session.document);
       const result = await saveScenario(
         candidate,
         asNew ? undefined : (session.savedId ?? undefined),
@@ -341,6 +385,7 @@
       return false;
     }
   }
+
   async function saveAndContinue() {
     if (await save()) {
       if (session && fingerprint(session.document) !== session.savedSnapshot) {
@@ -352,6 +397,7 @@
       action?.();
     }
   }
+
   async function duplicate(item: SavedScenario) {
     try {
       const document = copy(item.document);
@@ -362,6 +408,7 @@
       error = e instanceof Error ? e.message : String(e);
     }
   }
+
   async function confirmRename() {
     const item = saved.find((entry) => entry.id === renameId);
     if (!item) return;
@@ -379,6 +426,7 @@
       error = e instanceof Error ? e.message : String(e);
     }
   }
+
   async function confirmDelete() {
     if (!deleteId) return;
     try {
@@ -393,6 +441,7 @@
       error = e instanceof Error ? e.message : String(e);
     }
   }
+
   function load(document: ScenarioDocument, id: string | null = null) {
     documentGeneration++;
     error = '';
@@ -403,6 +452,7 @@
     requestAnalysis();
     battlefield?.fit();
   }
+
   async function openSaved(item: SavedScenario) {
     try {
       if (!client) throw new Error('Simulation is not ready.');
@@ -414,6 +464,7 @@
       error = e instanceof Error ? e.message : String(e);
     }
   }
+
   async function importSaved(document: ScenarioDocument) {
     load(document);
     const generation = documentGeneration;
@@ -428,9 +479,10 @@
       error = e instanceof Error ? e.message : String(e);
     }
   }
+
   async function imported(event: Event) {
-    const input = event.currentTarget as HTMLInputElement,
-      file = input.files?.[0];
+    const input = event.currentTarget as HTMLInputElement;
+    const file = input.files?.[0];
     input.value = '';
     if (!file) return;
     try {
@@ -448,51 +500,29 @@
       error = e instanceof Error ? e.message : String(e);
     }
   }
+
   function changeTool(tool: EditorTool) {
     if (!session) return;
     session = { ...session, tool, selection: null };
     publish();
   }
-  function pointKey(point: Point) {
-    return session?.tool === 'surface'
-      ? `${Math.floor(point.x)},${Math.floor(point.y)}`
-      : `${Math.round(point.x)},${Math.round(point.y)}`;
-  }
+
   function brush(point: Point) {
-    if (
-      !session ||
-      !scenario ||
-      !catalog ||
-      !Number.isInteger(brushRadius) ||
-      brushRadius < 0 ||
-      brushRadius > 5 ||
-      !Number.isFinite(amount) ||
-      amount <= 0 ||
-      !Number.isFinite(setValue)
-    )
-      return;
-    session.document = copy(session.document);
-    const map = session.document.scenario.map;
-    for (let dy = -brushRadius; dy <= brushRadius; dy++)
-      for (let dx = -brushRadius; dx <= brushRadius; dx++) {
-        const p = { x: point.x + dx, y: point.y + dy };
-        if (p.x < 0 || p.y < 0 || p.x >= map.width || p.y >= map.height) continue;
-        const key = pointKey(p);
-        if (visited.has(key)) continue;
-        visited.add(key);
-        paint(
-          map,
-          session.tool,
-          p,
-          surface,
-          amount,
-          setValue,
-          catalog.editorRules.minElevation,
-          catalog.editorRules.maxElevation,
-        );
-      }
+    if (!session || !scenario || !catalog) return;
+    const nextDoc = copy(session.document);
+    const applied = applyBrushStroke(
+      nextDoc.scenario.map,
+      session.tool,
+      point,
+      { surface, amount, setValue, brushRadius },
+      catalog,
+      visited,
+    );
+    if (!applied) return;
+    session.document = nextDoc;
     session = { ...session };
   }
+
   function startGesture(point: Point) {
     if (!session || !scenario || !catalog) return;
     gestureBefore = copy(session.document);
@@ -501,112 +531,54 @@
     gestureStart = point;
     lastPoint = point;
     visited = new Set();
-    if (['surface', 'raise', 'lower', 'set', 'smooth'].includes(session.tool)) brush(point);
-    else if (session.tool === 'select') {
-      const unit = current.units.find(
-        (u) => Math.hypot(u.position.x - point.x, u.position.y - point.y) < 0.7,
-      );
-      const patrol = current.map.patrol.findIndex(
-        (p) => Math.hypot(p.x - point.x, p.y - point.y) < 0.5,
-      );
-      const obstacle = current.map.obstacles.findIndex(
-        (o) =>
-          point.x >= o.x && point.x < o.x + o.width && point.y >= o.y && point.y < o.y + o.height,
-      );
-      session = {
-        ...session,
-        selection: unit
-          ? { kind: 'unit', index: unit.id }
-          : patrol >= 0
-            ? { kind: 'patrol', index: patrol }
-            : obstacle >= 0
-              ? { kind: 'obstacle', index: obstacle }
-              : null,
-      };
+    if (isBrushTool(session.tool)) {
+      brush(point);
+    } else if (session.tool === 'select') {
+      session = { ...session, selection: pickSelection(current, point) };
       publish();
     } else if (session.tool === 'patrol') {
       current.map.patrol.push({ x: Math.floor(point.x) + 0.5, y: Math.floor(point.y) + 0.5 });
       session.selection = { kind: 'patrol', index: current.map.patrol.length - 1 };
-    } else if (
-      session.tool === 'soldier' &&
-      current.factions.some((f) => f.id === faction) &&
-      current.units.filter((u) => u.faction === faction).length < catalog.maxPerFaction
-    ) {
-      const ids = new Set(current.units.map((u) => u.id));
-      let id = 1;
-      while (ids.has(id)) id++;
-      current.units.push({
-        id,
-        faction,
-        definitionId: catalog.units[0].id,
-        position: { x: Math.floor(point.x) + 0.5, y: Math.floor(point.y) + 0.5 },
-        doctrine: copy(catalog.defaultDoctrine),
-      });
-      session.selection = { kind: 'unit', index: id };
+    } else if (session.tool === 'soldier') {
+      const id = placeSoldier(current, faction, point, catalog);
+      if (id !== null) session.selection = { kind: 'unit', index: id };
     }
     session = { ...session };
   }
+
   function moveGesture(point: Point) {
-    if (!gestureBefore || !session) return;
-    if (['surface', 'raise', 'lower', 'set', 'smooth'].includes(session.tool)) {
-      const from = lastPoint ?? point,
-        steps = Math.max(1, Math.ceil(Math.hypot(point.x - from.x, point.y - from.y) * 2));
-      for (let i = 1; i <= steps; i++)
-        brush({
-          x: from.x + ((point.x - from.x) * i) / steps,
-          y: from.y + ((point.y - from.y) * i) / steps,
-        });
-      lastPoint = point;
+    if (!gestureBefore || !session || !isBrushTool(session.tool)) return;
+    const from = lastPoint ?? point;
+    const steps = Math.max(1, Math.ceil(Math.hypot(point.x - from.x, point.y - from.y) * 2));
+    for (let i = 1; i <= steps; i++) {
+      brush({
+        x: from.x + ((point.x - from.x) * i) / steps,
+        y: from.y + ((point.y - from.y) * i) / steps,
+      });
     }
+    lastPoint = point;
   }
+
   function endGesture(point: Point) {
     if (!gestureBefore || !gestureStart || !session) return;
     const current = session.document.scenario;
     if (session.tool === 'obstacle') {
-      const x1 = Math.floor(Math.min(gestureStart.x, point.x)),
-        y1 = Math.floor(Math.min(gestureStart.y, point.y)),
-        x2 = Math.floor(Math.max(gestureStart.x, point.x)),
-        y2 = Math.floor(Math.max(gestureStart.y, point.y));
-      current.map.obstacles.push({
-        x: x1,
-        y: y1,
-        width: x2 - x1 + 1,
-        height: y2 - y1 + 1,
-        heightMetres: obstacleHeight,
-      });
-      session.selection = { kind: 'obstacle', index: current.map.obstacles.length - 1 };
+      const index = placeObstacle(current, gestureStart, point, obstacleHeight);
+      session.selection = { kind: 'obstacle', index };
     } else if (
       session.tool === 'select' &&
       session.selection &&
       Math.hypot(point.x - gestureStart.x, point.y - gestureStart.y) > 0.1
     ) {
-      const p = { x: Math.floor(point.x) + 0.5, y: Math.floor(point.y) + 0.5 },
-        s = session.selection;
-      if (s.kind === 'unit') {
-        const unit = current.units.find((u) => u.id === s.index);
-        if (unit) unit.position = p;
-      } else if (s.kind === 'patrol') current.map.patrol[s.index] = p;
-      else {
-        const obstacle = current.map.obstacles[s.index];
-        if (obstacle) {
-          obstacle.x = Math.max(
-            0,
-            Math.min(current.map.width - obstacle.width, Math.floor(point.x)),
-          );
-          obstacle.y = Math.max(
-            0,
-            Math.min(current.map.height - obstacle.height, Math.floor(point.y)),
-          );
-        }
-      }
+      dragSelection(current, session.selection, point);
     }
     const before = gestureBefore;
     gestureBefore = null;
     gestureStart = null;
     changed(before);
   }
+
   function coordinateAction() {
-    const point = { x: Number(x) + 0.5, y: Number(y) + 0.5 };
     if (
       !scenario ||
       !Number.isInteger(x) ||
@@ -617,9 +589,11 @@
       y >= scenario.map.height
     )
       return;
+    const point = { x: Number(x) + 0.5, y: Number(y) + 0.5 };
     startGesture(point);
     endGesture(point);
   }
+
   function removeSelected() {
     if (!session?.selection) return;
     const s = session.selection;
@@ -628,40 +602,45 @@
       else if (s.kind === 'obstacle') d.scenario.map.obstacles.splice(s.index, 1);
       else d.scenario.map.patrol.splice(s.index, 1);
     });
-    session.selection = null;
-    session = { ...session };
+    session = { ...session, selection: null };
     publish();
   }
-  function reorder(direction: number) {
+
+  function reorderPatrol(direction: number) {
     if (!session?.selection || session.selection.kind !== 'patrol' || !scenario) return;
-    const from = session.selection.index,
-      to = from + direction;
+    const from = session.selection.index;
+    const to = from + direction;
     if (to < 0 || to >= scenario.map.patrol.length) return;
     edit((d) => {
       const p = d.scenario.map.patrol.splice(from, 1)[0];
       d.scenario.map.patrol.splice(to, 0, p);
     });
-    session.selection = { kind: 'patrol', index: to };
-    session = { ...session };
+    session = { ...session, selection: { kind: 'patrol', index: to } };
     publish();
   }
+
   function applyResize() {
     if (
       !scenario ||
+      !catalog ||
       !Number.isInteger(width) ||
       !Number.isInteger(height) ||
-      width < catalog!.editorRules.minDimension ||
-      height < catalog!.editorRules.minDimension ||
-      width > catalog!.editorRules.maxDimension ||
-      height > catalog!.editorRules.maxDimension
+      width < catalog.editorRules.minDimension ||
+      height < catalog.editorRules.minDimension ||
+      width > catalog.editorRules.maxDimension ||
+      height > catalog.editorRules.maxDimension
     )
       return;
     edit((d) => {
       d.scenario = resizeScenario(d.scenario, width, height);
     });
-    if (session) session.selection = null;
+    if (session) {
+      session = { ...session, selection: null };
+      publish();
+    }
     resizePreview = false;
   }
+
   function changeNumber(field: 'seed' | 'timeLimit', input: HTMLInputElement) {
     if (!scenario) return;
     const value = Number(input.value);
@@ -684,38 +663,33 @@
       d.scenario[field] = value;
     });
   }
+
   function toggleNoTimeLimit(unlimited: boolean) {
     if (!scenario || !catalog) return;
     if (unlimited && scenario.timeLimit !== null) lastTimeLimit = scenario.timeLimit;
+    const fallback = lastTimeLimit || catalog.defaultTimeLimit;
     edit((d) => {
-      d.scenario.timeLimit = unlimited ? null : lastTimeLimit || catalog!.defaultTimeLimit;
+      d.scenario.timeLimit = unlimited ? null : fallback;
     });
   }
+
   function moveSelected(axis: 'x' | 'y', value: number) {
-    if (!session?.selection || !scenario || !Number.isFinite(value)) return;
+    if (!session?.selection || !scenario) return;
     const selection = session.selection;
-    const limit = axis === 'x' ? scenario.map.width : scenario.map.height;
-    if (value < 0 || value >= limit) return;
     edit((d) => {
-      if (selection.kind === 'unit') {
-        const unit = d.scenario.units.find((u) => u.id === selection.index);
-        if (unit) unit.position[axis] = value;
-      } else if (selection.kind === 'patrol') d.scenario.map.patrol[selection.index][axis] = value;
-      else {
-        const obstacle = d.scenario.map.obstacles[selection.index];
-        const size = axis === 'x' ? obstacle.width : obstacle.height;
-        if (Number.isInteger(value) && value + size <= limit) obstacle[axis] = value;
-      }
+      moveSelectedAxis(d.scenario, selection, axis, value);
     });
   }
+
   function changeDoctrine(field: keyof Doctrine, value: Doctrine[keyof Doctrine]) {
     if (!selectedUnit) return;
     const id = selectedUnit.id;
     edit((d) => {
-      const u = d.scenario.units.find((u) => u.id === id);
+      const u = d.scenario.units.find((unit) => unit.id === id);
       if (u) u.doctrine = { ...u.doctrine, [field]: value };
     });
   }
+
   function changeFaction(value: number) {
     if (
       !selectedUnit ||
@@ -731,16 +705,11 @@
     }
     const id = selectedUnit.id;
     edit((d) => {
-      const unit = d.scenario.units.find((unit) => unit.id === id);
+      const unit = d.scenario.units.find((entry) => entry.id === id);
       if (unit) unit.faction = value;
     });
   }
-  function addFaction() {
-    if (!scenario) return;
-    edit((d) => {
-      d.scenario.factions.push(nextFactionDefinition(d.scenario.factions));
-    });
-  }
+
   function removeFaction(id: number) {
     if (!scenario || scenario.factions.length <= 2) return;
     edit((d) => {
@@ -752,6 +721,7 @@
       publish();
     }
   }
+
   function renameFaction(id: number, input: HTMLInputElement) {
     if (!scenario) return;
     const name = input.value.trim();
@@ -767,35 +737,41 @@
       if (target) target.name = name;
     });
   }
-  function recolorFaction(id: number, hex: string) {
-    edit((d) => {
-      const target = d.scenario.factions.find((f) => f.id === id);
-      if (target) target.color = parseColorHex(hex);
-    });
-  }
-  function setPatrolDirection(id: number, direction: PatrolDirection) {
-    edit((d) => {
-      const target = d.scenario.factions.find((f) => f.id === id);
-      if (target) target.patrolDirection = direction;
-    });
-  }
+
   function sizeObstacle(axis: 'width' | 'height', value: number) {
-    if (
-      !selectedObstacle ||
-      session?.selection?.kind !== 'obstacle' ||
-      !scenario ||
-      !Number.isInteger(value) ||
-      value < 1
-    )
-      return;
-    const limit =
-      axis === 'width'
-        ? scenario.map.width - selectedObstacle.x
-        : scenario.map.height - selectedObstacle.y;
-    if (value > limit) return;
+    if (!selectedObstacle || session?.selection?.kind !== 'obstacle' || !scenario) return;
     const index = session.selection.index;
     edit((d) => {
-      d.scenario.map.obstacles[index][axis] = value;
+      resizeObstacleAxis(d.scenario, index, axis, value);
+    });
+  }
+
+  function changeObstacleHeight(value: number) {
+    if (
+      !catalog ||
+      session?.selection?.kind !== 'obstacle' ||
+      !Number.isFinite(value) ||
+      value <= 0 ||
+      value > catalog.editorRules.maxObstacleHeight
+    )
+      return;
+    const index = session.selection.index;
+    edit((d) => {
+      d.scenario.map.obstacles[index].heightMetres = value;
+    });
+  }
+
+  function copyBuiltIn(mapId: string) {
+    if (!catalog) return;
+    const preset = catalog.maps.find((m) => m.id === mapId);
+    if (!preset) return;
+    const activeCatalog = catalog;
+    guard(() => {
+      const d = blankDocument(activeCatalog);
+      d.name = preset.name;
+      d.description = preset.description;
+      d.scenario.map = copy(preset.map);
+      load(d);
     });
   }
 </script>
@@ -851,641 +827,127 @@
       {/if}
       <div class="map" bind:this={host} aria-label="Map editor"></div>
       {#if catalog && session && scenario && doc}
-        <div class="tools" aria-label="Editor tools">
-          {#each ['surface', 'raise', 'lower', 'set', 'smooth', 'obstacle', 'select', 'patrol', 'soldier'] as tool (tool)}<button
-              class:active={session.tool === tool}
-              onclick={() => changeTool(tool as EditorTool)}
-            >
-              {tool}
-            </button>{/each}
-        </div>
-        <div class="controls">
-          {#if ['surface', 'raise', 'lower', 'set', 'smooth'].includes(session.tool)}<label>
-              Brush radius <input type="number" min="0" max="5" step="1" bind:value={brushRadius} />
-            </label>{/if}
-          {#if session.tool === 'surface'}<label>
-              Surface <select bind:value={surface}>
-                {#each catalog.surfaces as item (item.id)}<option value={item.id}>
-                    {item.name}
-                  </option>{/each}
-              </select>
-            </label>{/if}
-          {#if session.tool === 'raise' || session.tool === 'lower'}<label>
-              Elevation amount <input
-                type="number"
-                min="0.1"
-                max="100"
-                step="0.1"
-                bind:value={amount}
-              />
-            </label>{/if}
-          {#if session.tool === 'set'}<label>
-              Set elevation <input
-                type="number"
-                min={catalog.editorRules.minElevation}
-                max={catalog.editorRules.maxElevation}
-                step="0.1"
-                bind:value={setValue}
-              />
-            </label>{/if}
-          {#if session.tool === 'obstacle'}<label>
-              Obstacle height <select bind:value={obstacleHeight}>
-                <option value={catalog.lowObstacleHeight}>Low</option><option
-                  value={catalog.fullObstacleHeight}
-                >
-                  Full
-                </option>
-              </select>
-            </label>{/if}
-          {#if session.tool === 'soldier'}<label>
-              Faction <select aria-label="Faction" bind:value={faction}>
-                {#each scenario.factions as side (side.id)}<option value={side.id}>
-                    {side.name}
-                  </option>{/each}
-              </select>
-            </label>{/if}
-          <label>
-            Column <input
-              aria-label="Edit column"
-              type="number"
-              min="0"
-              max={scenario.map.width - 1}
-              bind:value={x}
-            />
-          </label><label>
-            Row <input
-              aria-label="Edit row"
-              type="number"
-              min="0"
-              max={scenario.map.height - 1}
-              bind:value={y}
-            />
-          </label><button onclick={coordinateAction}>Apply at coordinates</button>
-        </div>
-        <div class="controls">
-          <label>
-            <input type="checkbox" bind:checked={terrainOverlay} /> Elevation overlay
-          </label><span>Wheel to zoom; middle or right drag to pan.</span>
-        </div>
-        <div class="controls" aria-label="Terrain inspector">
-          <label>
-            Inspect column <input
-              type="number"
-              min="0"
-              max={scenario.map.width - 1}
-              bind:value={inspectX}
-            />
-          </label><label>
-            Inspect row <input
-              type="number"
-              min="0"
-              max={scenario.map.height - 1}
-              bind:value={inspectY}
-            />
-          </label>{#if inspected}<span data-testid="editor-terrain-readout">
-              {catalog.surfaces.find((item) => item.id === inspected.surface)?.name}: {inspected.elevation.toFixed(
-                1,
-              )} m | movement x{inspected.movementMultiplier.toFixed(2)} | {inspected.traversable
-                ? 'traversable'
-                : 'blocked'}
-            </span>{/if}
-        </div>
-        <div class="controls" aria-label="Terrain legend">
-          {#each catalog.surfaces as item (item.id)}<span>
-              <i
-                style={`display:inline-block;width:12px;height:12px;margin-right:4px;background:#${item.color.toString(16).padStart(6, '0')}`}
-              ></i>{item.name}
-            </span>{/each}<span>Amber: steep slope · Red: invalid placement</span>
-        </div>
-        {#if selectedUnit || selectedPatrol || selectedObstacle}
-          <div class="controls">
-            <strong>Selected position</strong><label>
-              X <input
-                aria-label="Selected X"
-                type="number"
-                step="0.5"
-                value={selectedUnit?.position.x ?? selectedPatrol?.x ?? selectedObstacle?.x}
-                onchange={(e) => moveSelected('x', Number(e.currentTarget.value))}
-              />
-            </label><label>
-              Y <input
-                aria-label="Selected Y"
-                type="number"
-                step="0.5"
-                value={selectedUnit?.position.y ?? selectedPatrol?.y ?? selectedObstacle?.y}
-                onchange={(e) => moveSelected('y', Number(e.currentTarget.value))}
-              />
-            </label>
-          </div>
-        {/if}
-        {#if selectedUnit}<div class="controls">
-            <label>
-              Selected faction <select
-                aria-label="Selected faction"
-                value={selectedUnit.faction}
-                onchange={(e) => changeFaction(Number(e.currentTarget.value))}
-              >
-                {#each scenario.factions as side (side.id)}<option value={side.id}>
-                    {side.name}
-                  </option>{/each}
-              </select>
-            </label>
-          </div>
-          <DoctrineEditor
-            unit={selectedUnit}
-            {catalog}
-            busy={false}
-            onClose={() => {
-              if (session) session = { ...session, selection: null };
-            }}
-            onChange={changeDoctrine}
-            onRemove={removeSelected}
-          /><InventoryDisplay
-            {catalog}
-            inventory={previewUnitInventory(catalog, scenario, selectedUnit)}
-          />{/if}
-        {#if selectedObstacle}<div class="controls">
-            <strong>Obstacle</strong><label>
-              Width <input
-                aria-label="Obstacle width"
-                type="number"
-                min="1"
-                max={scenario.map.width - selectedObstacle.x}
-                value={selectedObstacle.width}
-                onchange={(e) => sizeObstacle('width', Number(e.currentTarget.value))}
-              />
-            </label><label>
-              Depth <input
-                aria-label="Obstacle depth"
-                type="number"
-                min="1"
-                max={scenario.map.height - selectedObstacle.y}
-                value={selectedObstacle.height}
-                onchange={(e) => sizeObstacle('height', Number(e.currentTarget.value))}
-              />
-            </label><label>
-              Height (m) <input
-                type="number"
-                min="0.1"
-                max={catalog.editorRules.maxObstacleHeight}
-                step="0.1"
-                value={selectedObstacle.heightMetres}
-                onchange={(e) => {
-                  const value = Number(e.currentTarget.value),
-                    index = session!.selection!.index;
-                  if (
-                    Number.isFinite(value) &&
-                    value > 0 &&
-                    value <= catalog!.editorRules.maxObstacleHeight
-                  )
-                    edit((d) => {
-                      d.scenario.map.obstacles[index].heightMetres = value;
-                    });
-                }}
-              />
-            </label><button onclick={removeSelected}>Delete obstacle</button>
-          </div>{/if}
-        {#if selectedPatrol}<div class="controls">
-            <strong>Patrol point {session.selection!.index + 1}</strong><button
-              onclick={() => reorder(-1)}
-            >
-              Move earlier
-            </button><button onclick={() => reorder(1)}>Move later</button><button
-              onclick={removeSelected}
-            >
-              Delete patrol point
-            </button>
-          </div>{/if}
-        <section aria-label="Validation">
-          <h2>Validation</h2>
-          {#if pending || analyzedRevision !== revision}<p>
-              Checking scenario…
-            </p>{:else if analysis}<p>
-              {analysis.canStart
-                ? 'Ready to test'
-                : analysis.structuralValid
-                  ? 'Draft can be saved; resolve issues to test.'
-                  : 'Fix structural issues before saving.'}
-            </p>
-            {#each analysis.issues as issue, index (index)}<p
-                class:error={issue.severity === 'error'}
-              >
-                {issue.severity}: {issue.message}
-              </p>{/each}{/if}
-        </section>
+        <MakerToolbar
+          {catalog}
+          {scenario}
+          tool={session.tool}
+          bind:brushRadius
+          bind:surface
+          bind:amount
+          bind:setValue
+          bind:obstacleHeight
+          bind:faction
+          bind:x
+          bind:y
+          bind:terrainOverlay
+          bind:inspectX
+          bind:inspectY
+          {inspected}
+          onChangeTool={changeTool}
+          onCoordinateAction={coordinateAction}
+        />
+        <MakerSelectionPanel
+          {catalog}
+          {scenario}
+          {selectedUnit}
+          {selectedObstacle}
+          {selectedPatrol}
+          {selectedPatrolIndex}
+          {analysis}
+          checking={pending || analyzedRevision !== revision}
+          onMoveSelected={moveSelected}
+          onChangeFaction={changeFaction}
+          onChangeDoctrine={changeDoctrine}
+          onClearSelection={() => {
+            if (session) session = { ...session, selection: null };
+          }}
+          onRemoveSelected={removeSelected}
+          onSizeObstacle={sizeObstacle}
+          onObstacleHeight={changeObstacleHeight}
+          onReorderPatrol={reorderPatrol}
+        />
       {/if}
     </section>
-    {#if catalog && session && scenario && doc}<aside>
-        <section>
-          <h2>Scenario</h2>
-          <label>
-            Name <input
-              maxlength="100"
-              value={doc.name}
-              onchange={(e) =>
-                edit((d) => {
-                  d.name = e.currentTarget.value;
-                })}
-            />
-          </label><label>
-            Description <textarea
-              maxlength="2000"
-              value={doc.description}
-              onchange={(e) =>
-                edit((d) => {
-                  d.description = e.currentTarget.value;
-                })}></textarea>
-          </label><label>
-            Seed <input
-              type="number"
-              min="0"
-              max="4294967295"
-              value={scenario.seed}
-              onchange={(e) => changeNumber('seed', e.currentTarget)}
-            />
-          </label><label>
-            Time limit <input
-              type="number"
-              min="1"
-              disabled={scenario.timeLimit === null}
-              value={scenario.timeLimit ?? ''}
-              onchange={(e) => changeNumber('timeLimit', e.currentTarget)}
-            />
-          </label><label class="checkbox-row">
-            <input
-              data-testid="maker-no-time-limit"
-              type="checkbox"
-              checked={scenario.timeLimit === null}
-              onchange={(e) => toggleNoTimeLimit(e.currentTarget.checked)}
-            /> No time limit
-          </label>
-        </section>
-        <section aria-label="Factions">
-          <h2>Factions</h2>
-          {#each scenario.factions as side (side.id)}<div
-              class="faction-row"
-              data-testid={`editor-faction-${side.id}`}
-            >
-              <input
-                aria-label={`Faction ${side.name} color`}
-                type="color"
-                value={factionColorHex(side.color)}
-                onchange={(e) => recolorFaction(side.id, e.currentTarget.value)}
-              /><input
-                aria-label={`Faction ${side.id} name`}
-                maxlength="64"
-                value={side.name}
-                onchange={(e) => renameFaction(side.id, e.currentTarget)}
-              /><select
-                aria-label={`Faction ${side.name} patrol direction`}
-                value={side.patrolDirection}
-                onchange={(e) =>
-                  setPatrolDirection(side.id, e.currentTarget.value as PatrolDirection)}
-              >
-                <option value="forward">Forward</option><option value="reverse">Reverse</option>
-              </select><button
-                disabled={scenario.factions.length <= 2}
-                onclick={() => removeFaction(side.id)}
-              >
-                Remove
-              </button>
-            </div>{/each}
-          <button onclick={addFaction}>Add faction</button>
-        </section>
-        <section>
-          <h2>Map size</h2>
-          <label>
-            Width <input
-              type="number"
-              min={catalog.editorRules.minDimension}
-              max={catalog.editorRules.maxDimension}
-              bind:value={width}
-            />
-          </label><label>
-            Height <input
-              type="number"
-              min={catalog.editorRules.minDimension}
-              max={catalog.editorRules.maxDimension}
-              bind:value={height}
-            />
-          </label><button onclick={() => (resizePreview = true)}>
-            Preview resize
-          </button>{#if resizePreview}<p>
-              Northwest anchor. {scenario.units.filter(
-                (u) => u.position.x >= width || u.position.y >= height,
-              ).length} soldiers and {scenario.map.patrol.filter(
-                (p) => p.x >= width || p.y >= height,
-              ).length} patrol points removed; {scenario.map.obstacles.filter(
-                (o) => o.x + o.width > width || o.y + o.height > height,
-              ).length} obstacles clipped or removed.
-            </p>
-            <button onclick={applyResize}>Apply resize</button><button
-              onclick={() => (resizePreview = false)}
-            >
-              Cancel resize
-            </button>{/if}
-        </section>
-        <section>
-          <h2>Soldiers</h2>
-          {#each scenario.units as unit (unit.id)}<button
-              onclick={() => {
-                session = {
-                  ...session!,
-                  tool: 'select',
-                  selection: { kind: 'unit', index: unit.id },
-                };
-                publish();
-              }}
-            >
-              #{unit.id}
-              {factionName(scenario.factions, unit.faction)}
-            </button>{/each}
-          <h2>Patrol</h2>
-          {#each scenario.map.patrol as point, index (index)}<button
-              onclick={() => {
-                session = { ...session!, tool: 'select', selection: { kind: 'patrol', index } };
-                publish();
-              }}
-            >
-              Point {index + 1}: {point.x}, {point.y}
-            </button>{/each}
-        </section>
-        <section>
-          <h2>Library</h2>
-          <label>
-            New map width <input
-              type="number"
-              min={catalog.editorRules.minDimension}
-              max={catalog.editorRules.maxDimension}
-              bind:value={newWidth}
-            />
-          </label><label>
-            New map height <input
-              type="number"
-              min={catalog.editorRules.minDimension}
-              max={catalog.editorRules.maxDimension}
-              bind:value={newHeight}
-            />
-          </label><button
-            disabled={!Number.isInteger(newWidth) ||
-              !Number.isInteger(newHeight) ||
-              newWidth < catalog.editorRules.minDimension ||
-              newHeight < catalog.editorRules.minDimension ||
-              newWidth > catalog.editorRules.maxDimension ||
-              newHeight > catalog.editorRules.maxDimension}
-            onclick={() => guard(() => load(blankDocument(catalog!, newWidth, newHeight)))}
-          >
-            New blank
-          </button><label>
-            Copy built-in <select
-              onchange={(e) => {
-                const preset = catalog!.maps.find((m) => m.id === e.currentTarget.value);
-                if (preset)
-                  guard(() => {
-                    const d = blankDocument(catalog!);
-                    d.name = preset.name;
-                    d.description = preset.description;
-                    d.scenario.map = copy(preset.map);
-                    load(d);
-                  });
-                e.currentTarget.value = '';
-              }}
-            >
-              <option value="">Choose map</option>{#each catalog.maps as preset (preset.id)}<option
-                  value={preset.id}
-                >
-                  {preset.name}
-                </option>{/each}
-            </select>
-          </label><button onclick={() => importInput.click()}>Import</button><input
-            bind:this={importInput}
-            type="file"
-            accept=".json,application/json"
-            hidden
-            onchange={imported}
-          />{#each saved as item (item.id)}<div class="library-item">
-              <strong>{item.document.name}</strong><button
-                onclick={() =>
-                  guard(() => {
-                    void openSaved(item);
-                  })}
-              >
-                Open
-              </button><button
-                onclick={() => {
-                  renameId = item.id;
-                  renameValue = item.document.name;
-                }}
-              >
-                Rename
-              </button><button onclick={() => duplicate(item)}>Duplicate</button><button
-                onclick={() => (deleteId = item.id)}
-              >
-                Delete
-              </button>
-            </div>{/each}
-        </section>
-      </aside>{:else}<p>Preparing MapMaker...</p>{/if}
+    {#if catalog && session && scenario && doc}
+      <MakerSidebar
+        {catalog}
+        {doc}
+        {scenario}
+        {saved}
+        bind:width
+        bind:height
+        bind:newWidth
+        bind:newHeight
+        bind:resizePreview
+        onNameChange={(value) =>
+          edit((d) => {
+            d.name = value;
+          })}
+        onDescriptionChange={(value) =>
+          edit((d) => {
+            d.description = value;
+          })}
+        onNumberChange={changeNumber}
+        onToggleNoTimeLimit={toggleNoTimeLimit}
+        onRecolorFaction={(id, hex) =>
+          edit((d) => {
+            const target = d.scenario.factions.find((f) => f.id === id);
+            if (target) target.color = parseColorHex(hex);
+          })}
+        onRenameFaction={renameFaction}
+        onPatrolDirection={(id, direction: PatrolDirection) =>
+          edit((d) => {
+            const target = d.scenario.factions.find((f) => f.id === id);
+            if (target) target.patrolDirection = direction;
+          })}
+        onRemoveFaction={removeFaction}
+        onAddFaction={() =>
+          edit((d) => {
+            d.scenario.factions.push(nextFactionDefinition(d.scenario.factions));
+          })}
+        onApplyResize={applyResize}
+        onSelectUnit={(id) => {
+          if (!session) return;
+          session = { ...session, tool: 'select', selection: { kind: 'unit', index: id } };
+          publish();
+        }}
+        onSelectPatrol={(index) => {
+          if (!session) return;
+          session = { ...session, tool: 'select', selection: { kind: 'patrol', index } };
+          publish();
+        }}
+        onNewBlank={() =>
+          catalog && guard(() => load(blankDocument(catalog!, newWidth, newHeight)))}
+        onCopyBuiltIn={copyBuiltIn}
+        onImport={imported}
+        onOpenSaved={(item) =>
+          guard(() => {
+            void openSaved(item);
+          })}
+        onRequestRename={(item) => {
+          renameId = item.id;
+          renameValue = item.document.name;
+        }}
+        onDuplicate={duplicate}
+        onRequestDelete={(id) => (deleteId = id)}
+      />
+    {:else}<p>Preparing MapMaker...</p>{/if}
   </div>
-  {#if renameId}<div class="modal" role="dialog" aria-modal="true" aria-label="Rename scenario">
-      <div>
-        <h2>Rename scenario</h2>
-        <label>Name <input bind:value={renameValue} maxlength="100" /></label><button
-          onclick={confirmRename}
-        >
-          Rename
-        </button><button onclick={() => (renameId = null)}>Cancel</button>
-      </div>
-    </div>{/if}
-  {#if deleteId}<div class="modal" role="dialog" aria-modal="true" aria-label="Delete scenario">
-      <div>
-        <h2>Delete scenario?</h2>
-        <p>This removes the saved copy from the library.</p>
-        <button onclick={confirmDelete}>Delete</button><button onclick={() => (deleteId = null)}>
-          Cancel
-        </button>
-      </div>
-    </div>{/if}
-  {#if guardAction}<div class="modal" role="dialog" aria-modal="true" aria-label="Unsaved changes">
-      <div>
-        <h2>Unsaved changes</h2>
-        <p>Save this scenario before leaving?</p>
-        <button onclick={saveAndContinue}>Save</button><button
-          onclick={() => {
-            const action = guardAction;
-            guardAction = null;
-            action?.();
-          }}
-        >
-          Discard
-        </button><button onclick={() => (guardAction = null)}>Cancel</button>
-      </div>
-    </div>{/if}
+  <MakerDialogs
+    showRename={renameId !== null}
+    bind:renameValue
+    showDelete={deleteId !== null}
+    showUnsavedGuard={guardAction !== null}
+    onConfirmRename={confirmRename}
+    onCancelRename={() => (renameId = null)}
+    onConfirmDelete={confirmDelete}
+    onCancelDelete={() => (deleteId = null)}
+    onSaveAndContinue={saveAndContinue}
+    onDiscardAndContinue={() => {
+      const action = guardAction;
+      guardAction = null;
+      action?.();
+    }}
+    onCancelGuard={() => (guardAction = null)}
+  />
 </main>
-
-<style>
-  .maker {
-    padding: 1rem;
-    min-height: 100vh;
-    background: #e9e4d4;
-    color: #293126;
-  }
-  header,
-  .map-tools,
-  .tools,
-  .controls {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    flex-wrap: wrap;
-  }
-  header h1 {
-    margin: 0 auto 0 0;
-    font-size: 32px;
-  }
-  h2 {
-    font-size: 23px;
-    margin-bottom: 0.5rem;
-  }
-  button {
-    border: 1px solid #a5aa98;
-    background: #f5f2e8;
-    color: #364033;
-    padding: 7px 10px;
-    font-size: 12px;
-    font-weight: 600;
-  }
-  button:not(:disabled):hover {
-    background: #e2e4d5;
-  }
-  .tools button {
-    text-transform: capitalize;
-  }
-  .layout {
-    display: grid;
-    grid-template-columns: minmax(0, 1fr) 300px;
-    gap: 1rem;
-    margin-top: 1rem;
-  }
-  .map {
-    height: min(60vh, 650px);
-    min-height: 320px;
-    background: #aaa;
-    border: 6px solid #424b3b;
-    overflow: hidden;
-  }
-  .map-area section,
-  aside section {
-    background: #f8f5ea;
-    padding: 1rem;
-    margin-top: 1rem;
-  }
-  aside label {
-    display: block;
-    margin: 0.6rem 0;
-    font-size: 13px;
-  }
-  aside label input,
-  aside textarea {
-    display: block;
-    margin-top: 0.3rem;
-  }
-  aside label.checkbox-row {
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-  }
-  aside label.checkbox-row input {
-    display: inline-block;
-    margin-top: 0;
-  }
-  input,
-  textarea,
-  select {
-    max-width: 100%;
-    padding: 0.4rem;
-    border: 1px solid #b8bcaa;
-    background: #faf8ef;
-    color: #30382d;
-    font: inherit;
-  }
-  textarea {
-    width: 100%;
-    min-height: 4rem;
-  }
-  input[type='number'] {
-    width: 6rem;
-  }
-  .controls {
-    font-size: 12px;
-  }
-  .controls label {
-    display: flex;
-    align-items: center;
-    gap: 0.35rem;
-  }
-  .tools,
-  .controls {
-    margin-top: 0.6rem;
-  }
-  .active {
-    outline: 2px solid #315f62;
-    background: #dde5d9;
-  }
-  .error {
-    color: #a33;
-  }
-  .library-item {
-    padding: 0.7rem 0;
-    border-top: 1px solid #b8bcaa;
-  }
-  .library-item strong {
-    display: block;
-    margin-bottom: 0.4rem;
-  }
-  .faction-row {
-    display: flex;
-    align-items: center;
-    gap: 0.35rem;
-    margin: 0.4rem 0;
-    flex-wrap: wrap;
-  }
-  .faction-row input[type='color'] {
-    width: 2rem;
-    height: 2rem;
-    padding: 0;
-  }
-  .faction-row input:not([type='color']) {
-    flex: 1 1 5.5rem;
-    min-width: 0;
-  }
-  .modal {
-    position: fixed;
-    inset: 0;
-    width: auto;
-    padding: 1rem;
-    background: #202b22b8;
-    box-shadow: none;
-    display: grid;
-    place-items: center;
-    z-index: 20;
-  }
-  .modal > div {
-    width: min(100%, 420px);
-    background: #faf7ea;
-    padding: 2rem;
-    box-shadow: 0 15px 60px #17211755;
-  }
-  .modal label {
-    display: block;
-    margin: 1rem 0;
-  }
-  .modal button {
-    margin: 0.5rem 0.3rem 0 0;
-  }
-  @media (max-width: 850px) {
-    .layout {
-      grid-template-columns: 1fr;
-    }
-  }
-</style>

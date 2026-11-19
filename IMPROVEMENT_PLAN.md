@@ -264,9 +264,9 @@ Begin only after Phases 1–2 and after measuring 100 / 1,000 / 5,000 units with
 
 ## Phase 7 — Frontend structure and Svelte 5 migration
 
-- [ ] Migrate **every** component fully to Svelte 5 runes (`$state`, `$derived`, `$effect`, `$props`), removing all `export let` and `$:` syntax (`App`, `Skirmish`, `MapMaker`, `DoctrineEditor`, `FactionPanel`, `InventoryDisplay`, `Results`, `UnitPicker`). Migrate one component at a time with browser tests green after each.
-- [ ] Split [Skirmish.svelte](apps/web/src/components/Skirmish.svelte) and [MapMaker.svelte](apps/web/src/components/MapMaker.svelte) into focused subcomponents (setup controls, terrain inspector, action bar, live unit status, map tools, scenario properties).
-- [ ] Split [battlefield.ts](apps/web/src/lib/battlefield.ts) into a shared map view (camera, terrain cache), a battle layer, and an editor overlay.
+- [x] Migrate **every** component fully to Svelte 5 runes (`$state`, `$derived`, `$effect`, `$props`), removing all `export let` and `$:` syntax (`App`, `Skirmish`, `MapMaker`, `DoctrineEditor`, `FactionPanel`, `InventoryDisplay`, `Results`, `UnitPicker`, plus new subcomponents).
+- [x] Split [Skirmish.svelte](apps/web/src/components/Skirmish.svelte) and [MapMaker.svelte](apps/web/src/components/MapMaker.svelte) into focused subcomponents (`components/skirmish/*` and `components/maker/*` for setup controls, terrain inspector, action bar, live unit status, map tools, selection/validation, scenario properties/library, and dialogs).
+- [x] Split [battlefield.ts](apps/web/src/lib/battlefield.ts) into a shared map view (`lib/renderer/map-view.ts`), a battle layer (`lib/renderer/battle-layer.ts`), and an editor overlay (`lib/renderer/editor-overlay.ts`).
 - [x] Update [InventoryDisplay.svelte](apps/web/src/components/InventoryDisplay.svelte) to iterate actual unit inventory entries and equipped weapon ammo rather than `catalog.defaultLoadout` and hardcoded `'rifle-ammo'`.
 - [x] Drive faction panels, map colours, and results from scenario faction definitions (Phase 3).
 

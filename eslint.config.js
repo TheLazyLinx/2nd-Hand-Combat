@@ -72,7 +72,14 @@ export default tseslint.config(
           ],
           patterns: [
             {
-              group: ['./components/*', './components/**', './lib/battlefield*', './lib/client*'],
+              group: [
+                './components/*',
+                './components/**',
+                './lib/battlefield*',
+                './lib/renderer/*',
+                './lib/renderer/**',
+                './lib/client*',
+              ],
               message: 'The simulation Worker must not import UI, renderer, or client modules.',
             },
           ],
@@ -109,7 +116,7 @@ export default tseslint.config(
   },
   // Boundary: renderer displays snapshots only and never talks directly to BattleClient or UI components.
   {
-    files: ['apps/web/src/lib/battlefield.ts'],
+    files: ['apps/web/src/lib/battlefield.ts', 'apps/web/src/lib/renderer/**/*.ts'],
     rules: {
       'no-restricted-imports': [
         'error',
@@ -123,7 +130,16 @@ export default tseslint.config(
           patterns: [
             ...WORKER_AND_WASM_PATTERNS,
             {
-              group: ['./client', './client.ts', '../components/*', '../components/**'],
+              group: [
+                './client',
+                './client.ts',
+                '../client',
+                '../client.ts',
+                '../components/*',
+                '../components/**',
+                '../../components/*',
+                '../../components/**',
+              ],
               message:
                 'The renderer receives snapshots from callers and must not import BattleClient or UI components.',
             },

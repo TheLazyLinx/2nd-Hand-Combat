@@ -69,6 +69,15 @@ test('renderer stays decoupled from BattleClient, Worker, and Svelte', async () 
     svelteImport.some((m) => m.ruleId === 'no-restricted-imports'),
     `expected no-restricted-imports for svelte, got: ${JSON.stringify(svelteImport)}`,
   );
+
+  const rendererSubmoduleClientImport = await lintSnippet(
+    'apps/web/src/lib/renderer/map-view.ts',
+    `import { BattleClient } from '../client';\nvoid BattleClient;\n`,
+  );
+  assert.ok(
+    rendererSubmoduleClientImport.some((m) => m.ruleId === 'no-restricted-imports'),
+    `expected no-restricted-imports for ../client in renderer submodule, got: ${JSON.stringify(rendererSubmoduleClientImport)}`,
+  );
 });
 
 test('Worker stays decoupled from PixiJS, Svelte, and renderer modules', async () => {

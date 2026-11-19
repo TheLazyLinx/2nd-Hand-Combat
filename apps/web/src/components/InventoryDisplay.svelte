@@ -1,8 +1,14 @@
 <script lang="ts">
+  /** Displays starting or live soldier inventory, equipped hands, load factors, and sustainment. */
   import type { Catalog, InventorySnapshot, UnitSnapshot } from '../lib/types';
-  export let catalog: Catalog;
-  export let inventory: InventorySnapshot;
-  export let live: UnitSnapshot | null = null;
+
+  interface Props {
+    catalog: Catalog;
+    inventory: InventorySnapshot;
+    live?: UnitSnapshot | null;
+  }
+
+  let { catalog, inventory, live = null }: Props = $props();
 
   function itemName(itemId: string): string {
     return catalog.items.find((item) => item.id === itemId)?.name ?? itemId;
@@ -17,8 +23,8 @@
     const entry = inventory.entries.find((item) => item.id === id);
     return entry ? itemName(entry.itemId) : `Unknown item #${id}`;
   }
-  $: listedItems = Array.from(new Set(inventory.entries.map((entry) => entry.itemId)));
-  $: equippedAmmoId = (() => {
+  const listedItems = $derived(Array.from(new Set(inventory.entries.map((entry) => entry.itemId))));
+  const equippedAmmoId = $derived.by(() => {
     for (const handId of [inventory.leftHand, inventory.rightHand]) {
       if (handId === null) continue;
       const entry = inventory.entries.find((item) => item.id === handId);
@@ -29,7 +35,7 @@
       if (weapon) return weapon.ammoItemId;
     }
     return null;
-  })();
+  });
 </script>
 
 <section class="editor inventory" data-testid="inventory">

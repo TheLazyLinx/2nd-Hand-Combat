@@ -1,12 +1,18 @@
 ﻿<script lang="ts">
+  /** Per-soldier doctrine editor controls backed by Rust catalog doctrine rules. */
   import { unitDefinition } from '../lib/factions';
   import type { Catalog, Doctrine, UnitPlacement } from '../lib/types';
-  export let unit: UnitPlacement;
-  export let busy: boolean;
-  export let catalog: Catalog;
-  export let onClose: () => void;
-  export let onChange: (field: keyof Doctrine, value: Doctrine[keyof Doctrine]) => void;
-  export let onRemove: () => void;
+
+  interface Props {
+    unit: UnitPlacement;
+    busy: boolean;
+    catalog: Catalog;
+    onClose: () => void;
+    onChange: (field: keyof Doctrine, value: Doctrine[keyof Doctrine]) => void;
+    onRemove: () => void;
+  }
+
+  let { unit, busy, catalog, onClose, onChange, onRemove }: Props = $props();
 </script>
 
 <section class="editor" data-testid="selected-unit">

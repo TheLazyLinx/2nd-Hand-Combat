@@ -1,4 +1,8 @@
 <script lang="ts">
+  /**
+   * Skirmish workspace orchestrating Worker communication (`BattleClient`), PixiJS `Battlefield`,
+   * unit deployment/doctrine setup, live battle controls, and unit/terrain inspection.
+   */
   import { onMount, tick } from 'svelte';
   import { BattleClient } from '../lib/client';
   import { Battlefield } from '../lib/battlefield';
@@ -10,79 +14,92 @@
     unitDefinition,
   } from '../lib/factions';
   import { listScenarios, type SavedScenario } from '../lib/scenario-library';
-  import FactionPanel from './FactionPanel.svelte';
   import DoctrineEditor from './DoctrineEditor.svelte';
+  import FactionPanel from './FactionPanel.svelte';
   import InventoryDisplay from './InventoryDisplay.svelte';
-  import UnitPicker from './UnitPicker.svelte';
   import Results from './Results.svelte';
+  import UnitPicker from './UnitPicker.svelte';
+  import LiveUnitStatus from './skirmish/LiveUnitStatus.svelte';
+  import SkirmishActionBar from './skirmish/SkirmishActionBar.svelte';
+  import SkirmishSetupBar from './skirmish/SkirmishSetupBar.svelte';
   import type {
     BattleResult,
     Catalog,
     Doctrine,
     InventorySnapshot,
     Scenario,
+    ScenarioAnalysis,
+    ScenarioDocument,
     UnitPlacement,
     WorkerReply,
   } from '../lib/types';
 
-  export let showHp = true;
-  export let initialDocument: import('../lib/types').ScenarioDocument | null = null;
-  export let onBack: () => void;
-  export let returnToMaker = false;
-  let catalog: Catalog | null = null;
-  let saved: SavedScenario[] = [];
-  let analysis: import('../lib/types').ScenarioAnalysis | null = null;
-  let analyzedScenario: Scenario | null = null;
-  let analysisRevision = 0;
-  let description = '';
-  let scenario: Scenario | null = null;
-  let starting: Scenario | null = null;
-  let snapshot: LiveFrame | null = null;
-  let inspectedInventory: { unitId: number; inventory: InventorySnapshot } | null = null;
-  let behindRealTime = false;
-  let result: BattleResult | null = null;
-  let phase: 'loading' | 'setup' | 'running' | 'paused' | 'finished' | 'error' = 'loading';
-  let error = '';
-  let selected: number | null = null;
-  let placement: { faction: number; definitionId: string } | null = null;
-  let modalFaction: number | null = null;
-  let busy = false;
-  let deployX = 0;
-  let deployY = 0;
-  let mapId = '';
-  let startingMapId = '';
-  let inspectX = 0;
-  let inspectY = 0;
-  let terrainOverlay = true;
+  interface Props {
+    showHp?: boolean;
+    initialDocument?: ScenarioDocument | null;
+    onBack: () => void;
+    returnToMaker?: boolean;
+  }
+
+  let { showHp = true, initialDocument = null, onBack, returnToMaker = false }: Props = $props();
+
+  let catalog = $state.raw<Catalog | null>(null);
+  let saved = $state.raw<SavedScenario[]>([]);
+  let analysis = $state.raw<ScenarioAnalysis | null>(null);
+  let description = $state('');
+  let scenario = $state.raw<Scenario | null>(null);
+  let starting = $state.raw<Scenario | null>(null);
+  let snapshot = $state.raw<LiveFrame | null>(null);
+  let inspectedInventory = $state.raw<{ unitId: number; inventory: InventorySnapshot } | null>(
+    null,
+  );
+  let behindRealTime = $state(false);
+  let result = $state.raw<BattleResult | null>(null);
+  let phase = $state<'loading' | 'setup' | 'running' | 'paused' | 'finished' | 'error'>('loading');
+  let error = $state('');
+  let selected = $state<number | null>(null);
+  let placement = $state<{ faction: number; definitionId: string } | null>(null);
+  let modalFaction = $state<number | null>(null);
+  let busy = $state(false);
+  let deployX = $state(0);
+  let deployY = $state(0);
+  let mapId = $state('');
+  let startingMapId = $state('');
+  let inspectX = $state(0);
+  let inspectY = $state(0);
+  let terrainOverlay = $state(true);
   let lastNumericTimeLimit = 600;
 
-  let host: HTMLElement;
-  let client: BattleClient | null = null;
-  let battlefield: Battlefield | null = null;
+  let host: HTMLElement | undefined;
+  let client = $state.raw<BattleClient | null>(null);
+  let battlefield = $state.raw<Battlefield | null>(null);
+  let analyzedScenario: Scenario | null = null;
+  let analysisRevision = 0;
   let generation = 0;
+
   const copy = <T,>(value: T): T => structuredClone(value);
+
   function formatClock(seconds: number): string {
     const whole = Math.max(0, Math.round(seconds));
     const mins = Math.floor(whole / 60);
     const secs = whole % 60;
     return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   }
-  $: selectedUnit = scenario?.units.find((unit) => unit.id === selected) ?? null;
-  $: inspected =
+
+  const selectedUnit = $derived(scenario?.units.find((unit) => unit.id === selected) ?? null);
+  const inspected = $derived(
     scenario &&
-    analysis &&
-    Number.isInteger(inspectX) &&
-    Number.isInteger(inspectY) &&
-    inspectX >= 0 &&
-    inspectY >= 0 &&
-    inspectX < scenario.map.width &&
-    inspectY < scenario.map.height
+      analysis &&
+      Number.isInteger(inspectX) &&
+      Number.isInteger(inspectY) &&
+      inspectX >= 0 &&
+      inspectY >= 0 &&
+      inspectX < scenario.map.width &&
+      inspectY < scenario.map.height
       ? analysis.cells[inspectY * scenario.map.width + inspectX]
-      : null;
-  $: if (scenario && client && scenario !== analyzedScenario) {
-    analyzeScenario(scenario);
-  }
-  $: selectedState = (() => {
+      : null,
+  );
+  const selectedState = $derived.by(() => {
     if (!snapshot || selected === null) return null;
     if (!isCompactFrame(snapshot)) {
       return snapshot.units.find((unit) => unit.id === selected) ?? null;
@@ -94,20 +111,33 @@
           ? previewUnitInventory(catalog, scenario, selectedUnit)
           : null;
     return inv ? snapshot.unitSnapshot(selected, inv) : null;
-  })();
-  $: if (client && phase !== 'setup' && phase !== 'loading' && phase !== 'error') {
-    client.inspect(selected);
-  }
-  $: if (battlefield && scenario && catalog)
-    battlefield.update(
-      scenario,
-      snapshot,
-      selected,
-      showHp,
-      phase === 'running',
-      catalog,
-      terrainOverlay,
-    );
+  });
+
+  $effect(() => {
+    if (scenario && client && scenario !== analyzedScenario) {
+      void analyzeScenario(scenario);
+    }
+  });
+
+  $effect(() => {
+    if (battlefield && scenario && catalog) {
+      battlefield.update(
+        scenario,
+        snapshot,
+        selected,
+        showHp,
+        phase === 'running',
+        catalog,
+        terrainOverlay,
+      );
+    }
+  });
+
+  $effect(() => {
+    if (client && phase !== 'setup' && phase !== 'loading' && phase !== 'error') {
+      client.inspect(selected);
+    }
+  });
 
   async function analyzeScenario(value: Scenario) {
     analyzedScenario = value;
@@ -120,6 +150,7 @@
       if (revision === analysisRevision) error = e instanceof Error ? e.message : String(e);
     }
   }
+
   function receive(message: WorkerReply) {
     if (message.type === 'ready') {
       catalog = message.catalog;
@@ -201,6 +232,7 @@
       phase = 'error';
     }
   }
+
   async function openSkirmish() {
     closeBattle();
     phase = 'loading';
@@ -209,14 +241,19 @@
     await tick();
     if (current !== generation || !host) return;
     try {
-      battlefield = new Battlefield(host, mapClick, (x, y) => {
+      const nextField = new Battlefield(host, mapClick, (x, y) => {
         inspectX = x;
         inspectY = y;
       });
-      await battlefield.init();
-      if (current !== generation) return;
-      client = new BattleClient(receive);
-      client.initialize();
+      await nextField.init();
+      if (current !== generation) {
+        nextField.destroy();
+        return;
+      }
+      battlefield = nextField;
+      const nextClient = new BattleClient(receive);
+      client = nextClient;
+      nextClient.initialize();
     } catch (e) {
       if (current === generation) {
         error = e instanceof Error ? e.message : String(e);
@@ -224,6 +261,7 @@
       }
     }
   }
+
   function closeBattle() {
     generation++;
     analysisRevision++;
@@ -245,10 +283,12 @@
     modalFaction = null;
     busy = false;
   }
+
   function back() {
     closeBattle();
     onBack();
   }
+
   async function mapClick(x: number, y: number) {
     if (!scenario || !catalog || busy) return;
     if (phase !== 'setup') {
@@ -298,6 +338,7 @@
       selected = nearest?.id ?? null;
     }
   }
+
   function editUnit(id: number, patch: Partial<UnitPlacement>) {
     if (!scenario || phase !== 'setup' || busy) return;
     scenario = {
@@ -305,10 +346,12 @@
       units: scenario.units.map((unit) => (unit.id === id ? { ...unit, ...patch } : unit)),
     };
   }
+
   function doctrine(field: keyof Doctrine, value: Doctrine[keyof Doctrine]) {
     if (selectedUnit)
       editUnit(selectedUnit.id, { doctrine: { ...selectedUnit.doctrine, [field]: value } });
   }
+
   function changeTimeLimitMinutes(input: HTMLInputElement) {
     if (!scenario || !catalog || phase !== 'setup' || busy) return;
     const minutes = Number(input.value);
@@ -323,6 +366,7 @@
     lastNumericTimeLimit = seconds;
     scenario = { ...scenario, timeLimit: seconds };
   }
+
   function toggleNoTimeLimit(unlimited: boolean) {
     if (!scenario || !catalog || phase !== 'setup' || busy) return;
     error = '';
@@ -333,6 +377,7 @@
       scenario = { ...scenario, timeLimit: lastNumericTimeLimit || catalog.defaultTimeLimit };
     }
   }
+
   async function changeMap(id: string) {
     if (!catalog || !scenario || !client || phase !== 'setup' || busy) return;
     const preset = catalog.maps.find((map) => map.id === id);
@@ -376,15 +421,17 @@
     inspectY = 0;
     error = '';
   }
+
   function removeUnit() {
     if (!scenario || selected === null || busy) return;
     scenario = { ...scenario, units: scenario.units.filter((unit) => unit.id !== selected) };
     selected = null;
   }
+
   async function start() {
     if (!scenario || !client || busy) return;
-    const candidate = copy(scenario),
-      token = generation;
+    const candidate = copy(scenario);
+    const token = generation;
     busy = true;
     error = '';
     try {
@@ -413,6 +460,7 @@
       if (token === generation) busy = false;
     }
   }
+
   function reset() {
     if (!client || !starting) return;
     client.reset();
@@ -427,23 +475,27 @@
     error = '';
     phase = 'setup';
   }
+
   function pause() {
     if (phase === 'running') {
       client?.pause();
       phase = 'paused';
     }
   }
+
   function resume() {
     if (phase === 'paused') {
       client?.resume();
       phase = 'running';
     }
   }
+
   function endBattle() {
     if (phase === 'running' || phase === 'paused') {
       client?.stop();
     }
   }
+
   onMount(() => {
     const visibility = () => {
       if (document.hidden) pause();
@@ -456,7 +508,7 @@
     };
     document.addEventListener('visibilitychange', visibility);
     window.addEventListener('keydown', keydown);
-    openSkirmish();
+    void openSkirmish();
     return () => {
       document.removeEventListener('visibilitychange', visibility);
       window.removeEventListener('keydown', keydown);
@@ -537,173 +589,50 @@
         </div>
       </div>
       {#if catalog && scenario}
-        <div class="terrain-controls">
-          <button onclick={() => battlefield?.fit()}>Fit map</button><button
-            onclick={() => battlefield?.zoomBy(1.25)}
-          >
-            Zoom in
-          </button><button onclick={() => battlefield?.zoomBy(0.8)}>Zoom out</button>
-          <label>
-            Map <select
-              data-testid="map-preset"
-              value={mapId}
-              disabled={phase !== 'setup' || busy}
-              onchange={(e) => changeMap(e.currentTarget.value)}
-            >
-              {#if mapId === 'editor'}<option value="editor">MapMaker test</option>{/if}<optgroup
-                label="Built-in maps"
-              >
-                {#each catalog.maps as map (map.id)}<option value={map.id}>
-                    {map.name}
-                  </option>{/each}
-              </optgroup><optgroup label="My scenarios">
-                {#each saved as entry (entry.id)}<option value={`saved:${entry.id}`}>
-                    {entry.document.name}
-                  </option>{/each}
-              </optgroup>
-            </select>
-          </label>
-          <span>{description}</span><small>
-            Selecting a map or scenario replaces the current setup.
-          </small>
-          <label>
-            Time limit (min) <input
-              data-testid="time-limit-minutes"
-              type="number"
-              min="0.05"
-              max="60"
-              step="any"
-              disabled={phase !== 'setup' || busy || scenario.timeLimit === null}
-              value={scenario.timeLimit === null
-                ? ''
-                : Number((scenario.timeLimit / 60).toFixed(2))}
-              onchange={(e) => changeTimeLimitMinutes(e.currentTarget)}
-            />
-          </label><label>
-            <input
-              data-testid="no-time-limit"
-              type="checkbox"
-              disabled={phase !== 'setup' || busy}
-              checked={scenario.timeLimit === null}
-              onchange={(e) => toggleNoTimeLimit(e.currentTarget.checked)}
-            /> No time limit
-          </label>
-          <label>
-            <input type="checkbox" bind:checked={terrainOverlay} /> Terrain grid and elevation shading
-          </label>
-        </div>
-        <div class="terrain-inspector" aria-label="Terrain inspector">
-          <strong>Inspect terrain</strong><label>
-            Column <input
-              aria-label="Inspect column"
-              type="number"
-              min="0"
-              max={scenario.map.width - 1}
-              bind:value={inspectX}
-            />
-          </label><label>
-            Row <input
-              aria-label="Inspect row"
-              type="number"
-              min="0"
-              max={scenario.map.height - 1}
-              bind:value={inspectY}
-            />
-          </label>
-          {#if inspected}<span data-testid="terrain-readout">
-              {catalog.surfaces.find((surface) => surface.id === inspected.surface)?.name}:
-              elevation {inspected.elevation.toFixed(1)} m | movement x{inspected.movementMultiplier.toFixed(
-                2,
-              )} | {inspected.traversable ? 'traversable' : 'blocked'}
-            </span>{:else}<span>Choose a valid cell.</span>{/if}
-        </div>
-        <div class="terrain-legend" aria-label="Terrain legend">
-          {#each catalog.surfaces as surface (surface.id)}<span>
-              <i style={`background:#${surface.color.toString(16).padStart(6, '0')}`}
-              ></i>{surface.name}
-            </span>{/each}
-        </div>
+        <SkirmishSetupBar
+          {catalog}
+          {scenario}
+          {saved}
+          {mapId}
+          {description}
+          {phase}
+          {busy}
+          {terrainOverlay}
+          {inspectX}
+          {inspectY}
+          {inspected}
+          placementActive={placement !== null}
+          {deployX}
+          {deployY}
+          onFit={() => battlefield?.fit()}
+          onZoom={(factor) => battlefield?.zoomBy(factor)}
+          onChangeMap={changeMap}
+          onTimeLimitInput={changeTimeLimitMinutes}
+          onToggleNoTimeLimit={toggleNoTimeLimit}
+          onOverlayChange={(enabled) => (terrainOverlay = enabled)}
+          onInspectChange={(x, y) => {
+            inspectX = x;
+            inspectY = y;
+          }}
+          onDeployChange={(x, y) => {
+            deployX = x;
+            deployY = y;
+          }}
+          onPlaceAt={(x, y) => void mapClick(x, y)}
+        />
       {/if}
-      {#if placement !== null}<div class="coordinate-entry">
-          <span>Or enter a grid position:</span><label>
-            Column <input
-              type="number"
-              min="0"
-              max={(scenario?.map.width ?? 1) - 1}
-              bind:value={deployX}
-            />
-          </label><label>
-            Row <input
-              type="number"
-              min="0"
-              max={(scenario?.map.height ?? 1) - 1}
-              bind:value={deployY}
-            />
-          </label><button
-            disabled={busy ||
-              !Number.isInteger(deployX) ||
-              !Number.isInteger(deployY) ||
-              deployX < 0 ||
-              deployY < 0 ||
-              deployX >= (scenario?.map.width ?? 0) ||
-              deployY >= (scenario?.map.height ?? 0)}
-            onclick={() => mapClick(deployX + 0.5, deployY + 0.5)}
-          >
-            Place soldier
-          </button>
-        </div>{/if}
       {#if error}<p class="error" role="alert">{error}</p>{/if}
-      <div class="action-bar">
-        <div>
-          <strong>
-            {phase === 'setup'
-              ? 'Prepare your forces'
-              : phase === 'finished'
-                ? 'Battle complete'
-                : phase === 'paused'
-                  ? 'Battle paused'
-                  : 'Battle in progress'}
-          </strong><small>
-            {phase === 'setup'
-              ? 'Place at least one soldier on each side.'
-              : phase === 'paused'
-                ? 'Resume when you are ready.'
-                : 'Doctrine stays fixed during battle.'}
-          </small>
-        </div>
-        <div class="actions">
-          {#if phase === 'setup'}<button
-              class="primary"
-              data-testid="start-battle"
-              disabled={busy || !analysis?.canStart}
-              onclick={start}
-            >
-              Start battle <span>&rarr;</span>
-            </button>{:else if phase === 'running'}<button
-              class="primary"
-              data-testid="pause-battle"
-              onclick={pause}
-            >
-              Pause battle
-            </button>{:else if phase === 'paused'}<button
-              class="primary"
-              data-testid="resume-battle"
-              onclick={resume}
-            >
-              Resume battle
-            </button>{/if}{#if phase === 'running' || phase === 'paused'}<button
-              data-testid="end-battle"
-              onclick={endBattle}
-            >
-              End battle
-            </button>{/if}{#if starting && phase !== 'setup'}<button
-              data-testid="reset-battle"
-              onclick={reset}
-            >
-              Reset
-            </button>{/if}
-        </div>
-      </div>
+      <SkirmishActionBar
+        {phase}
+        {busy}
+        canStart={!!analysis?.canStart}
+        hasStarting={!!starting}
+        onStart={start}
+        onPause={pause}
+        onResume={resume}
+        onEndBattle={endBattle}
+        onReset={reset}
+      />
       {#if result}<Results {result} factions={scenario?.factions ?? []} />{/if}
     </section>
     <aside class="sidebar">
@@ -746,20 +675,7 @@
           inventory={previewUnitInventory(catalog, scenario, selectedUnit)}
         />
       {:else if catalog && selectedUnit && selectedState}
-        <section class="editor" data-testid="unit-terrain-status">
-          <h3>{unitDefinition(catalog, selectedUnit.definitionId).name} #{selectedUnit.id}</h3>
-          <p>
-            {selectedState.terrain.surface} | elevation {selectedState.terrain.elevation.toFixed(1)} m
-            | Actual movement x{selectedState.terrain.movementMultiplier.toFixed(2)}
-          </p>
-          <p>
-            {selectedState.terrain.revealed ? 'Revealed' : 'Not revealed'} | {selectedState.terrain
-              .protection === null
-              ? 'No current target'
-              : `${Math.round(selectedState.terrain.protection * 100)}% directional protection against target #${selectedState.targetId}`}
-          </p>
-        </section>
-        <InventoryDisplay {catalog} inventory={selectedState.inventory} live={selectedState} />
+        <LiveUnitStatus {catalog} unit={selectedUnit} state={selectedState} />
       {/if}
     </aside>
   </div>
