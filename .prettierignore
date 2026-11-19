@@ -3,6 +3,7 @@ target/
 .tools/
 .github/workflows/
 apps/web/src/generated/wasm/
+crates/sim-bench/fingerprints.json
 test-results/
 playwright-report/
 package-lock.json

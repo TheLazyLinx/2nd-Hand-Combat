@@ -1,12 +1,124 @@
 use crate::{
-    decisions, perception,
+    decisions,
+    definitions::TUNING,
+    navigation::SearchScratch,
+    perception,
+    terrain::TerrainCache,
     types::*,
     unit::{Memory, ThreatMemory, Unit},
     validation::validate_scenario,
 };
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StepTimings {
+    pub sustainment_ns: u64,
+    pub perception_ns: u64,
+    pub decisions_ns: u64,
+    pub movement_ns: u64,
+    pub post_perception_ns: u64,
+    pub item_actions_ns: u64,
+    pub combat_ns: u64,
+    pub results_ns: u64,
+}
+impl StepTimings {
+    pub fn total_ns(&self) -> u64 {
+        self.sustainment_ns
+            + self.perception_ns
+            + self.decisions_ns
+            + self.movement_ns
+            + self.post_perception_ns
+            + self.item_actions_ns
+            + self.combat_ns
+            + self.results_ns
+    }
+}
+
+pub(crate) trait StepTimer {
+    fn mark_sustainment(&mut self);
+    fn mark_perception(&mut self);
+    fn mark_decisions(&mut self);
+    fn mark_movement(&mut self);
+    fn mark_post_perception(&mut self);
+    fn mark_item_actions(&mut self);
+    fn mark_combat(&mut self);
+    fn mark_results(&mut self);
+}
+
+pub(crate) struct NoopTimer;
+impl StepTimer for NoopTimer {
+    #[inline(always)]
+    fn mark_sustainment(&mut self) {}
+    #[inline(always)]
+    fn mark_perception(&mut self) {}
+    #[inline(always)]
+    fn mark_decisions(&mut self) {}
+    #[inline(always)]
+    fn mark_movement(&mut self) {}
+    #[inline(always)]
+    fn mark_post_perception(&mut self) {}
+    #[inline(always)]
+    fn mark_item_actions(&mut self) {}
+    #[inline(always)]
+    fn mark_combat(&mut self) {}
+    #[inline(always)]
+    fn mark_results(&mut self) {}
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+struct RealTimer {
+    last: std::time::Instant,
+    timings: StepTimings,
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl RealTimer {
+    fn new() -> Self {
+        Self {
+            last: std::time::Instant::now(),
+            timings: StepTimings::default(),
+        }
+    }
+    fn lap(&mut self) -> u64 {
+        let now = std::time::Instant::now();
+        let elapsed = now.duration_since(self.last).as_nanos() as u64;
+        self.last = now;
+        elapsed
+    }
+}
+#[cfg(not(target_arch = "wasm32"))]
+impl StepTimer for RealTimer {
+    fn mark_sustainment(&mut self) {
+        self.timings.sustainment_ns = self.lap();
+    }
+    fn mark_perception(&mut self) {
+        self.timings.perception_ns = self.lap();
+    }
+    fn mark_decisions(&mut self) {
+        self.timings.decisions_ns = self.lap();
+    }
+    fn mark_movement(&mut self) {
+        self.timings.movement_ns = self.lap();
+    }
+    fn mark_post_perception(&mut self) {
+        self.timings.post_perception_ns = self.lap();
+    }
+    fn mark_item_actions(&mut self) {
+        self.timings.item_actions_ns = self.lap();
+    }
+    fn mark_combat(&mut self) {
+        self.timings.combat_ns = self.lap();
+    }
+    fn mark_results(&mut self) {
+        self.timings.results_ns = self.lap();
+    }
+}
+
 pub struct Battle {
     scenario: Scenario,
+    terrain: TerrainCache,
+    scratch: SearchScratch,
+    pre_observations: Vec<Vec<usize>>,
+    post_observations: Vec<Vec<usize>>,
+    moved: Vec<bool>,
     units: Vec<Unit>,
     tick: u32,
     rng: u64,
@@ -30,33 +142,66 @@ impl Battle {
                 u.patrol_index = (u.placement.id as usize) % scenario.map.patrol.len();
             }
         }
+        let terrain = TerrainCache::new(&scenario.map);
+        let scratch = SearchScratch::new(terrain.width, terrain.height);
+        let unit_count = units.len();
         Ok(Self {
             rng: scenario.seed as u64 + 1,
             scenario,
+            terrain,
+            scratch,
+            pre_observations: vec![Vec::new(); unit_count],
+            post_observations: vec![Vec::new(); unit_count],
+            moved: vec![false; unit_count],
             units,
             tick: 0,
             result: None,
         })
     }
+    pub fn is_finished(&self) -> bool {
+        self.result.is_some()
+    }
     pub fn step(&mut self) {
+        self.step_with(&mut NoopTimer);
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn step_profiled(&mut self) -> StepTimings {
+        let mut timer = RealTimer::new();
+        self.step_with(&mut timer);
+        timer.timings
+    }
+    fn step_with<T: StepTimer>(&mut self, timer: &mut T) {
         if self.result.is_some() {
             return;
+        }
+        #[cfg(test)]
+        {
+            self.terrain.sync_if_mutated(&self.scenario.map);
+            let n = self.units.len();
+            if self.pre_observations.len() != n {
+                self.pre_observations.resize_with(n, Vec::new);
+                self.post_observations.resize_with(n, Vec::new);
+                self.moved.resize(n, false);
+            }
         }
         self.tick += 1;
         for u in &mut self.units {
             crate::sustainment::advance(u);
         }
+        timer.mark_sustainment();
+        let terrain = self.terrain.view(&self.scenario.map);
         // Sight is refreshed every tick independently for each living unit.
-        let observations: Vec<_> = (0..self.units.len())
-            .map(|i| {
-                if self.units[i].hp > 0.0 {
-                    perception::observe_all(&self.units, &self.scenario.map, i, self.tick)
-                } else {
-                    Vec::new()
-                }
-            })
-            .collect();
-        for (i, seen) in observations.iter().enumerate() {
+        for i in 0..self.units.len() {
+            perception::observe_all_into(
+                &self.units,
+                terrain,
+                i,
+                self.tick,
+                &mut self.pre_observations[i],
+            );
+        }
+        let mut contacts = Vec::new();
+        for (i, seen) in self.pre_observations.iter().enumerate() {
             if self.units[i].hp <= 0.0 {
                 continue;
             }
@@ -64,18 +209,18 @@ impl Battle {
                 self.units[i].last_contact = self.tick;
             }
             let previous_target = self.units[i].target;
-            // Unit storage is ID-sorted, so the known-threat order remains stable as distances change.
-            let contacts: Vec<_> = self
-                .units
-                .iter()
-                .enumerate()
-                .filter(|(j, _)| seen.contains(j))
-                .map(|(_, u)| (u.placement.id, u.position))
-                .collect();
+            contacts.clear();
+            contacts.extend(seen.iter().map(|&j| {
+                let u = &self.units[j];
+                (u.placement.id, u.position)
+            }));
+            let first_seen = seen
+                .first()
+                .map(|&j| (self.units[j].placement.id, self.units[j].position));
             let me = &mut self.units[i];
             me.threat_memories
-                .retain(|memory| self.tick - memory.tick <= 200);
-            for (id, position) in contacts {
+                .retain(|memory| self.tick - memory.tick <= TUNING.memory_expiry_ticks);
+            for &(id, position) in &contacts {
                 if let Some(memory) = me.threat_memories.iter_mut().find(|memory| memory.id == id) {
                     memory.position = position;
                     memory.tick = self.tick;
@@ -91,71 +236,74 @@ impl Battle {
             me.known_threats.clear();
             me.known_threats
                 .extend(me.threat_memories.iter().map(|memory| memory.position));
-            if let Some(j) = seen.first() {
-                let position = self.units[*j].position;
-                let id = self.units[*j].placement.id;
-                self.units[i].target = Some(id);
+            if let Some((id, position)) = first_seen {
+                me.target = Some(id);
                 if previous_target != Some(id) {
-                    self.units[i].needs_decision = true;
+                    me.needs_decision = true;
                 }
-                self.units[i].memory = Some(Memory {
+                me.memory = Some(Memory {
                     position,
                     tick: self.tick,
                     investigated: false,
                 });
             } else {
-                self.units[i].target = None;
+                me.target = None;
                 if previous_target.is_some() {
-                    self.units[i].needs_decision = true;
+                    me.needs_decision = true;
                 }
-                if self.units[i]
+                if me
                     .memory
                     .as_ref()
-                    .is_some_and(|m| self.tick - m.tick > 200)
+                    .is_some_and(|m| self.tick - m.tick > TUNING.memory_expiry_ticks)
                 {
-                    self.units[i].memory = None;
+                    me.memory = None;
                 }
             }
         }
-        let decisions: Vec<_> = (0..self.units.len())
-            .map(|i| {
-                if self.units[i].hp <= 0.0 || (self.tick % 10 != 1 && !self.units[i].needs_decision)
-                {
-                    return None;
-                }
-                let faction_index = self
-                    .scenario
-                    .factions
-                    .iter()
-                    .position(|f| *f == self.units[i].placement.faction)
-                    .unwrap_or(0);
-                let unit = &self.units[i];
-                let visible_enemy = observations[i].first().map(|j| self.units[*j].position);
-                let allies = self
-                    .units
-                    .iter()
-                    .filter(|other| {
-                        other.hp > 0.0
-                            && other.placement.faction == unit.placement.faction
-                            && other.placement.id != unit.placement.id
-                    })
-                    .map(|other| other.position)
-                    .collect();
-                Some(decisions::decide(
-                    &decisions::DecisionInput {
-                        unit,
-                        visible_enemy,
-                        visible_enemy_revealed: observations[i]
-                            .first()
-                            .is_some_and(|j| self.tick < self.units[*j].revealed_until),
-                        tick: self.tick,
-                        allies,
-                    },
-                    &self.scenario.map,
-                    faction_index,
-                ))
-            })
-            .collect();
+        timer.mark_perception();
+        let mut decisions = Vec::with_capacity(self.units.len());
+        for i in 0..self.units.len() {
+            let cadence_due = (self.tick + self.units[i].placement.id)
+                .is_multiple_of(TUNING.decision_interval_ticks);
+            if self.units[i].hp <= 0.0 || (!cadence_due && !self.units[i].needs_decision) {
+                decisions.push(None);
+                continue;
+            }
+            let faction_index = self
+                .scenario
+                .factions
+                .iter()
+                .position(|f| *f == self.units[i].placement.faction)
+                .unwrap_or(0);
+            let unit = &self.units[i];
+            let visible_enemy = self.pre_observations[i]
+                .first()
+                .map(|j| self.units[*j].position);
+            let allies = self
+                .units
+                .iter()
+                .filter(|other| {
+                    other.hp > 0.0
+                        && other.placement.faction == unit.placement.faction
+                        && other.placement.id != unit.placement.id
+                })
+                .map(|other| other.position)
+                .collect();
+            decisions.push(Some(decisions::decide_with(
+                &decisions::DecisionInput {
+                    unit,
+                    visible_enemy,
+                    visible_enemy_revealed: self.pre_observations[i]
+                        .first()
+                        .is_some_and(|j| self.tick < self.units[*j].revealed_until),
+                    tick: self.tick,
+                    allies,
+                },
+                terrain,
+                &mut self.scratch,
+                faction_index,
+            )));
+        }
         for (u, decision) in self.units.iter_mut().zip(decisions) {
             if let Some(decision) = decision {
                 let fallback = decision.fallback_goal;
@@ -167,6 +315,11 @@ impl Battle {
                 if let Some(route) = decision.route {
                     u.route = route;
                 }
+                if decision.mark_investigated {
+                    if let Some(memory) = &mut u.memory {
+                        memory.investigated = true;
+                    }
+                }
                 u.needs_decision = false;
                 u.fallback_threat = if fallback.is_some() && fallback == old_fallback {
                     u.fallback_threat
@@ -177,16 +330,30 @@ impl Battle {
                 };
             }
         }
-        crate::movement::execute(&mut self.units, &self.scenario.map, self.tick);
-        crate::combat::execute(
+        timer.mark_decisions();
+        crate::movement::execute_with(
             &mut self.units,
-            &self.scenario.map,
+            terrain,
+            &mut self.scratch,
+            self.tick,
+            &mut self.moved,
+        );
+        timer.mark_movement();
+        crate::combat::execute_with_context(
+            &mut self.units,
+            terrain,
             &mut self.rng,
             self.tick,
+            &self.pre_observations,
+            &self.moved,
+            &mut self.post_observations,
+            timer,
         );
         self.result = crate::results::evaluate(&self.scenario, &self.units, self.tick);
+        timer.mark_results();
     }
     pub fn snapshot(&self) -> Snapshot {
+        let terrain = self.terrain.view(&self.scenario.map);
         Snapshot {
             tick: self.tick,
             elapsed: self.tick as f64 * crate::definitions::STEP,
@@ -212,7 +379,7 @@ impl Battle {
                     mobility_factor: u.inventory.load_factor() * u.needs_factor(),
                     terrain: TerrainStatus {
                         surface: crate::map::surface(&self.scenario.map, u.position),
-                        elevation: crate::map::ground_height(&self.scenario.map, u.position),
+                        elevation: self.terrain.ground_height(&self.scenario.map, u.position),
                         movement_multiplier: u.movement_multiplier,
                         revealed: self.tick < u.revealed_until,
                         protection: u
@@ -223,8 +390,8 @@ impl Battle {
                                     .find(|other| other.placement.id == id && other.hp > 0.0)
                             })
                             .map(|other| {
-                                1.0 - crate::map::shot_fraction(
-                                    &self.scenario.map,
+                                1.0 - crate::map::shot_fraction_t(
+                                    terrain,
                                     other.position,
                                     u.position,
                                 )
@@ -464,5 +631,25 @@ mod tests {
             battle.step();
         }
         assert_eq!(battle.snapshot(), terminal);
+    }
+    #[test]
+    fn unreachable_memory_returns_unit_to_patrol_in_battle() {
+        let mut battle = test_battle();
+        battle.scenario.map.obstacles.push(Obstacle {
+            x: 15,
+            y: 0,
+            width: 1,
+            height: 20,
+            height_metres: 2.5,
+        });
+        battle.units[0].memory = Some(Memory {
+            position: Point { x: 20.5, y: 10.5 },
+            tick: 0,
+            investigated: false,
+        });
+        battle.step();
+        assert!(battle.units[0].memory.as_ref().unwrap().investigated);
+        assert_eq!(battle.snapshot().units[0].behavior, Behavior::Searching);
+        assert!(battle.snapshot().units[0].position.x > 2.5);
     }
 }

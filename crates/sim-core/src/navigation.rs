@@ -1,6 +1,19 @@
-use crate::{map, types::*};
+//! Deterministic 8-neighbor weighted pathfinding (`SearchScratch`) and cached per-unit `Route`.
+//!
+//! Uses precomputed neighbor travel times from `TerrainCache`, generation-stamped scratch buffers
+//! (zero per-search heap allocation, O(1) reset), single-goal A* in `Route::prepare`, and
+//! multi-target Dijkstra with early exit for candidate scoring in `decisions`.
+
+use crate::{
+    map,
+    terrain::{Terrain, MAX_SPEED},
+    types::*,
+};
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
+
+#[cfg(test)]
+use crate::terrain::TerrainCache;
 
 #[derive(Clone, Default)]
 pub(crate) struct Route {
@@ -14,12 +27,13 @@ pub(crate) struct Route {
 
 #[derive(Clone, Copy)]
 struct Entry {
+    priority: f64,
     cost: f64,
     index: usize,
 }
 impl PartialEq for Entry {
     fn eq(&self, other: &Self) -> bool {
-        self.cost == other.cost && self.index == other.index
+        self.priority == other.priority && self.cost == other.cost && self.index == other.index
     }
 }
 impl Eq for Entry {}
@@ -31,151 +45,400 @@ impl PartialOrd for Entry {
 impl Ord for Entry {
     fn cmp(&self, other: &Self) -> Ordering {
         other
-            .cost
-            .total_cmp(&self.cost)
+            .priority
+            .total_cmp(&self.priority)
+            .then_with(|| other.cost.total_cmp(&self.cost))
             .then_with(|| other.index.cmp(&self.index))
     }
 }
 
-pub(crate) struct Search {
+/// Reusable per-battle search buffers with generation stamps for O(1) reset between searches.
+#[derive(Clone)]
+pub(crate) struct SearchScratch {
     width: usize,
-    start: Point,
+    height: usize,
+    risk_width: usize,
+    gen: u32,
+    cost_gen: Vec<u32>,
     costs: Vec<f64>,
     previous: Vec<usize>,
+    target_gen: Vec<u32>,
+    risk_gen: Vec<u32>,
+    risk_cache: Vec<f64>,
+    queue: BinaryHeap<Entry>,
+    start: Point,
     revealed: bool,
 }
-impl Search {
-    #[cfg(test)]
-    pub(crate) fn new(
-        map: &ArenaMap,
-        start: Point,
-        threat: Option<Point>,
-        preference: RoutePreference,
-    ) -> Self {
-        let threats: Vec<_> = threat.into_iter().collect();
-        Self::with_threats(map, start, &threats, preference, false)
+
+enum StopMode<'a, F> {
+    All,
+    AllTargets {
+        remaining: usize,
+    },
+    BestTarget {
+        tie_margin: f64,
+        best_cost: f64,
+    },
+    AStar {
+        goal_index: usize,
+        goal_center: Point,
+    },
+    FirstMatching {
+        predicate: F,
+        found: &'a mut Option<Point>,
+    },
+}
+
+pub(crate) struct SearchParams<'a> {
+    pub start: Point,
+    pub threats: &'a [Point],
+    pub preference: RoutePreference,
+    pub revealed: bool,
+}
+
+impl SearchScratch {
+    pub(crate) fn new(width: usize, height: usize) -> Self {
+        let len = width * height;
+        let risk_width = width * 2 + 1;
+        let risk_len = risk_width * (height * 2 + 1);
+        Self {
+            width,
+            height,
+            risk_width,
+            gen: 0,
+            cost_gen: vec![0; len],
+            costs: vec![f64::INFINITY; len],
+            previous: vec![usize::MAX; len],
+            target_gen: vec![0; len],
+            risk_gen: vec![0; risk_len],
+            risk_cache: vec![0.0; risk_len],
+            queue: BinaryHeap::new(),
+            start: Point { x: 0.0, y: 0.0 },
+            revealed: false,
+        }
     }
-    pub(crate) fn with_threats(
-        map: &ArenaMap,
-        start: Point,
-        threats: &[Point],
-        preference: RoutePreference,
-        revealed: bool,
-    ) -> Self {
-        Self::run(map, start, threats, preference, revealed, None)
+
+    fn reset(&mut self, width: usize, height: usize, start: Point, revealed: bool) {
+        if self.width != width || self.height != height {
+            *self = Self::new(width, height);
+        }
+        if self.gen == u32::MAX {
+            self.cost_gen.fill(0);
+            self.target_gen.fill(0);
+            self.risk_gen.fill(0);
+            self.gen = 1;
+        } else {
+            self.gen += 1;
+        }
+        self.queue.clear();
+        self.start = start;
+        self.revealed = revealed;
     }
-    pub(crate) fn for_targets(
-        map: &ArenaMap,
-        start: Point,
-        threats: &[Point],
-        preference: RoutePreference,
-        revealed: bool,
-        targets: &[Point],
-    ) -> Self {
-        Self::run(map, start, threats, preference, revealed, Some(targets))
+
+    #[inline]
+    fn cost_at(&self, index: usize) -> f64 {
+        if self.cost_gen[index] == self.gen {
+            self.costs[index]
+        } else {
+            f64::INFINITY
+        }
     }
-    fn run(
-        map: &ArenaMap,
+
+    #[inline]
+    fn set_cost(&mut self, index: usize, cost: f64, prev: usize) {
+        self.cost_gen[index] = self.gen;
+        self.costs[index] = cost;
+        self.previous[index] = prev;
+    }
+
+    fn mark_targets(&mut self, terrain: Terrain<'_>, targets: &[Point]) -> usize {
+        let width = terrain.cache.width;
+        let height = terrain.cache.height;
+        let gen = self.gen;
+        let mut count = 0usize;
+        for p in targets {
+            if p.x < 0.0 || p.y < 0.0 {
+                continue;
+            }
+            let x = p.x.floor() as usize;
+            let y = p.y.floor() as usize;
+            if x < width && y < height {
+                let idx = y * width + x;
+                if !terrain.cache.occupied[idx] && self.target_gen[idx] != gen {
+                    self.target_gen[idx] = gen;
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    pub(crate) fn run_dijkstra(
+        &mut self,
+        terrain: Terrain<'_>,
         start: Point,
         threats: &[Point],
         preference: RoutePreference,
         revealed: bool,
         targets: Option<&[Point]>,
-    ) -> Self {
-        let width = map.width as usize;
-        let height = map.height as usize;
-        let mut remaining = vec![false; width * height];
-        let mut count = 0;
-        if let Some(targets) = targets {
-            for p in targets {
-                if p.x < 0.0 || p.y < 0.0 {
-                    continue;
+    ) {
+        let width = terrain.cache.width;
+        let height = terrain.cache.height;
+        self.reset(width, height, start, revealed);
+
+        let params = SearchParams {
+            start,
+            threats,
+            preference,
+            revealed,
+        };
+        let stop = match targets {
+            Some(targets) => {
+                let remaining = self.mark_targets(terrain, targets);
+                if remaining == 0 {
+                    return;
                 }
-                let x = p.x.floor() as usize;
-                let y = p.y.floor() as usize;
-                if x < width
-                    && y < height
-                    && !map::blocked(map, center(width, y * width + x))
-                    && !remaining[y * width + x]
-                {
-                    remaining[y * width + x] = true;
-                    count += 1;
-                }
+                StopMode::AllTargets { remaining }
             }
+            None => StopMode::All,
+        };
+
+        self.seed_start(terrain, &params, None, f64::INFINITY);
+        self.expand(
+            terrain,
+            &params,
+            f64::INFINITY,
+            stop as StopMode<'_, fn(Point) -> bool>,
+        );
+    }
+
+    /// Targeted Dijkstra that halts as soon as all targets within `tie_margin` of the cheapest
+    /// reachable target have been settled (exact optimum for cost-ordered candidate selection).
+    pub(crate) fn run_dijkstra_until_best_target(
+        &mut self,
+        terrain: Terrain<'_>,
+        params: &SearchParams<'_>,
+        targets: &[Point],
+        tie_margin: f64,
+        max_cost: f64,
+    ) {
+        self.reset(
+            terrain.cache.width,
+            terrain.cache.height,
+            params.start,
+            params.revealed,
+        );
+        if self.mark_targets(terrain, targets) == 0 {
+            return;
         }
-        let mut costs = vec![f64::INFINITY; width * height];
-        let mut previous = vec![usize::MAX; width * height];
-        let mut queue = BinaryHeap::new();
-        if targets.is_some() && count == 0 {
-            return Self {
-                width,
-                start,
-                costs,
-                previous,
-                revealed,
-            };
+        self.seed_start(terrain, params, None, max_cost);
+        self.expand(
+            terrain,
+            params,
+            max_cost,
+            StopMode::BestTarget {
+                tie_margin,
+                best_cost: f64::INFINITY,
+            } as StopMode<'_, fn(Point) -> bool>,
+        );
+    }
+
+    /// Bounded Dijkstra that stops immediately upon popping the cheapest cell matching `predicate`.
+    pub(crate) fn run_dijkstra_first_matching<F: FnMut(Point) -> bool>(
+        &mut self,
+        terrain: Terrain<'_>,
+        params: &SearchParams<'_>,
+        max_cost: f64,
+        predicate: F,
+    ) -> Option<Point> {
+        self.reset(
+            terrain.cache.width,
+            terrain.cache.height,
+            params.start,
+            params.revealed,
+        );
+        self.seed_start(terrain, params, None, max_cost);
+        let mut found = None;
+        self.expand(
+            terrain,
+            params,
+            max_cost,
+            StopMode::FirstMatching {
+                predicate,
+                found: &mut found,
+            },
+        );
+        found
+    }
+
+    /// Single-goal A* using an admissible, consistent Euclidean-distance heuristic.
+    pub(crate) fn run_astar(
+        &mut self,
+        terrain: Terrain<'_>,
+        start: Point,
+        goal: Point,
+        threats: &[Point],
+        preference: RoutePreference,
+        revealed: bool,
+    ) {
+        let width = terrain.cache.width;
+        let height = terrain.cache.height;
+        self.reset(width, height, start, revealed);
+
+        let Some(goal_index) = self.index(goal) else {
+            return;
+        };
+        if terrain.cache.occupied[goal_index]
+            || map::travel_time_t(terrain, center(width, goal_index), goal).is_none()
+        {
+            return;
         }
-        // A cell center or edge midpoint is shared by several edges. Cache the
-        // threat exposure at each half-grid coordinate for this search.
-        let risk_width = width * 2 + 1;
-        let mut risk_cache = vec![f64::NAN; risk_width * (height * 2 + 1)];
-        // Seed all adjacent cell centers directly reachable from the exact starting position.
-        let sx = start.x.floor() as i32;
-        let sy = start.y.floor() as i32;
+        let goal_center = center(width, goal_index);
+        let params = SearchParams {
+            start,
+            threats,
+            preference,
+            revealed,
+        };
+        self.seed_start(terrain, &params, Some(goal_center), f64::INFINITY);
+        self.expand(
+            terrain,
+            &params,
+            f64::INFINITY,
+            StopMode::AStar {
+                goal_index,
+                goal_center,
+            } as StopMode<'_, fn(Point) -> bool>,
+        );
+    }
+
+    fn seed_start(
+        &mut self,
+        terrain: Terrain<'_>,
+        params: &SearchParams<'_>,
+        heuristic_goal: Option<Point>,
+        max_cost: f64,
+    ) {
+        let width = terrain.cache.width;
+        let height = terrain.cache.height;
+        let sx = params.start.x.floor() as i32;
+        let sy = params.start.y.floor() as i32;
         for y in (sy - 1)..=(sy + 1) {
             for x in (sx - 1)..=(sx + 1) {
                 if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
                     continue;
                 }
                 let index = y as usize * width + x as usize;
+                if terrain.cache.occupied[index] {
+                    continue;
+                }
                 let point = center(width, index);
-                if let Some(time) = map::travel_time(map, start, point) {
-                    let cost = weighted(map, start, point, time, threats, preference, revealed);
-                    costs[index] = cost;
-                    previous[index] = index;
-                    queue.push(Entry { cost, index });
+                if let Some(time) = map::travel_time_t(terrain, params.start, point) {
+                    let cost = weighted_t(
+                        terrain,
+                        params.start,
+                        point,
+                        time,
+                        params.threats,
+                        params.preference,
+                        params.revealed,
+                    );
+                    if cost > max_cost {
+                        continue;
+                    }
+                    let h = heuristic_goal.map_or(0.0, |g| point.distance(g) / MAX_SPEED);
+                    self.set_cost(index, cost, index);
+                    self.queue.push(Entry {
+                        priority: cost + h,
+                        cost,
+                        index,
+                    });
                 }
             }
         }
-        while let Some(Entry { cost, index }) = queue.pop() {
-            if cost > costs[index] {
+    }
+
+    fn expand<F: FnMut(Point) -> bool>(
+        &mut self,
+        terrain: Terrain<'_>,
+        params: &SearchParams<'_>,
+        max_cost: f64,
+        mut stop: StopMode<'_, F>,
+    ) {
+        let width = self.width;
+        let risk_width = self.risk_width;
+        let gen = self.gen;
+        let use_risk =
+            params.preference == RoutePreference::Protected && !params.threats.is_empty();
+        let dir_offsets = terrain.cache.dir_offsets;
+
+        while let Some(Entry { cost, index, .. }) = self.queue.pop() {
+            if cost > self.cost_at(index) {
                 continue;
             }
-            if targets.is_some() && remaining[index] {
-                remaining[index] = false;
-                count -= 1;
-                if count == 0 {
-                    break;
+            if cost > max_cost {
+                break;
+            }
+            let from = center(width, index);
+            match &mut stop {
+                StopMode::All => {}
+                StopMode::AStar { goal_index, .. } => {
+                    if index == *goal_index {
+                        break;
+                    }
+                }
+                StopMode::AllTargets { remaining } => {
+                    if self.target_gen[index] == gen {
+                        self.target_gen[index] = 0;
+                        *remaining -= 1;
+                        if *remaining == 0 {
+                            break;
+                        }
+                    }
+                }
+                StopMode::BestTarget {
+                    tie_margin,
+                    best_cost,
+                } => {
+                    if cost > *best_cost + *tie_margin {
+                        break;
+                    }
+                    if self.target_gen[index] == gen {
+                        *best_cost = best_cost.min(cost);
+                    }
+                }
+                StopMode::FirstMatching { predicate, found } => {
+                    if predicate(from) {
+                        **found = Some(from);
+                        break;
+                    }
                 }
             }
-            let x = (index % width) as i32;
-            let y = (index / width) as i32;
-            let from = center(width, index);
-            for (dx, dy) in [
-                (1, 0),
-                (0, 1),
-                (-1, 0),
-                (0, -1),
-                (1, 1),
-                (-1, 1),
-                (-1, -1),
-                (1, -1),
-            ] {
-                let nx = x + dx;
-                let ny = y + dy;
-                if nx < 0 || ny < 0 || nx >= width as i32 || ny >= height as i32 {
+
+            let astar_goal = match &stop {
+                StopMode::AStar { goal_center, .. } => Some(*goal_center),
+                _ => None,
+            };
+            let effective_cap = match &stop {
+                StopMode::BestTarget {
+                    tie_margin,
+                    best_cost,
+                } if best_cost.is_finite() => max_cost.min(*best_cost + *tie_margin),
+                _ => max_cost,
+            };
+
+            let times = terrain.cache.neighbor_times(index);
+            for (dir, &time) in times.iter().enumerate() {
+                if !time.is_finite() {
                     continue;
                 }
-                let next = ny as usize * width + nx as usize;
+                let next = (index as isize + dir_offsets[dir]) as usize;
+                let existing = self.cost_at(next);
+                if cost + time + 1e-10 >= existing || cost + time > effective_cap {
+                    continue;
+                }
                 let to = center(width, next);
-                // Swept-radius segment validation also prevents diagonal corner cutting.
-                let Some(time) = map::travel_time(map, from, to) else {
-                    continue;
-                };
-                if cost + time + 1e-10 >= costs[next] {
-                    continue;
-                }
-                let edge_cost = if preference == RoutePreference::Protected && !threats.is_empty() {
+                let edge_cost = if use_risk {
                     let mut risk = 0.0_f64;
                     for p in [
                         from,
@@ -186,11 +449,15 @@ impl Search {
                         to,
                     ] {
                         let key = (p.y * 2.0) as usize * risk_width + (p.x * 2.0) as usize;
-                        let value = &mut risk_cache[key];
-                        if value.is_nan() {
-                            *value = exposure(map, p, threats, revealed);
-                        }
-                        risk = risk.max(*value);
+                        let value = if self.risk_gen[key] == gen {
+                            self.risk_cache[key]
+                        } else {
+                            let v = exposure(terrain, p, params.threats, params.revealed);
+                            self.risk_gen[key] = gen;
+                            self.risk_cache[key] = v;
+                            v
+                        };
+                        risk = risk.max(value);
                         if risk >= 1.0 {
                             break;
                         }
@@ -200,28 +467,25 @@ impl Search {
                     time
                 };
                 let candidate = cost + edge_cost;
-                if candidate + 1e-10 < costs[next] {
-                    costs[next] = candidate;
-                    previous[next] = index;
-                    queue.push(Entry {
+                if candidate <= effective_cap && candidate + 1e-10 < existing {
+                    self.set_cost(next, candidate, index);
+                    let h = astar_goal.map_or(0.0, |g| to.distance(g) / MAX_SPEED);
+                    self.queue.push(Entry {
+                        priority: candidate + h,
                         cost: candidate,
                         index: next,
                     });
                 }
             }
         }
-        Self {
-            width,
-            start,
-            costs,
-            previous,
-            revealed,
-        }
     }
+
     pub(crate) fn cost(&self, p: Point) -> Option<f64> {
         let index = self.index(p)?;
-        self.costs[index].is_finite().then_some(self.costs[index])
+        let c = self.cost_at(index);
+        c.is_finite().then_some(c)
     }
+
     fn index(&self, p: Point) -> Option<usize> {
         if p.x < 0.0 || p.y < 0.0 {
             return None;
@@ -231,29 +495,20 @@ impl Search {
         let i = y.checked_mul(self.width)?.checked_add(x)?;
         (x < self.width && i < self.costs.len()).then_some(i)
     }
-    #[cfg(test)]
-    pub(crate) fn route(
-        &self,
-        map: &ArenaMap,
-        goal: Point,
-        threat: Option<Point>,
-        preference: RoutePreference,
-    ) -> Route {
-        let threats: Vec<_> = threat.into_iter().collect();
-        self.route_with_threats(map, goal, &threats, preference)
-    }
+
     pub(crate) fn route_with_threats(
         &self,
-        map: &ArenaMap,
+        terrain: Terrain<'_>,
         goal: Point,
         threats: &[Point],
         preference: RoutePreference,
     ) -> Route {
-        let mut path = self.path(map, goal);
+        let mut path = self.path(terrain, goal);
         if preference == RoutePreference::Fastest {
-            if let (Some(direct), Some(grid)) =
-                (map::travel_time(map, self.start, goal), self.cost(goal))
-            {
+            if let (Some(direct), Some(grid)) = (
+                map::travel_time_t(terrain, self.start, goal),
+                self.cost(goal),
+            ) {
                 if direct <= grid + 1e-9 {
                     path = vec![goal];
                 }
@@ -268,15 +523,16 @@ impl Search {
             next: 0,
         }
     }
-    fn path(&self, map: &ArenaMap, goal: Point) -> Vec<Point> {
+
+    pub(crate) fn path(&self, terrain: Terrain<'_>, goal: Point) -> Vec<Point> {
         let Some(mut index) = self.index(goal) else {
             return vec![];
         };
-        if !self.costs[index].is_finite() {
+        if !self.cost_at(index).is_finite() {
             return vec![];
         }
         let mut path = Vec::new();
-        if map::travel_time(map, center(self.width, index), goal).is_none() {
+        if map::travel_time_t(terrain, center(self.width, index), goal).is_none() {
             return path;
         }
         path.push(goal);
@@ -298,14 +554,101 @@ impl Search {
         path
     }
 }
+
+#[cfg(test)]
+pub(crate) struct Search {
+    scratch: SearchScratch,
+    costs: Vec<f64>,
+}
+#[cfg(test)]
+impl Search {
+    pub(crate) fn new(
+        map: &ArenaMap,
+        start: Point,
+        threat: Option<Point>,
+        preference: RoutePreference,
+    ) -> Self {
+        let threats: Vec<_> = threat.into_iter().collect();
+        Self::with_threats(map, start, &threats, preference, false)
+    }
+    pub(crate) fn with_threats(
+        map: &ArenaMap,
+        start: Point,
+        threats: &[Point],
+        preference: RoutePreference,
+        revealed: bool,
+    ) -> Self {
+        let cache = TerrainCache::new(map);
+        let mut scratch = SearchScratch::new(cache.width, cache.height);
+        scratch.run_dijkstra(cache.view(map), start, threats, preference, revealed, None);
+        let costs = (0..scratch.costs.len())
+            .map(|i| scratch.cost_at(i))
+            .collect();
+        Self { scratch, costs }
+    }
+    pub(crate) fn for_targets(
+        map: &ArenaMap,
+        start: Point,
+        threats: &[Point],
+        preference: RoutePreference,
+        revealed: bool,
+        targets: &[Point],
+    ) -> Self {
+        let cache = TerrainCache::new(map);
+        let mut scratch = SearchScratch::new(cache.width, cache.height);
+        scratch.run_dijkstra(
+            cache.view(map),
+            start,
+            threats,
+            preference,
+            revealed,
+            Some(targets),
+        );
+        let costs = (0..scratch.costs.len())
+            .map(|i| scratch.cost_at(i))
+            .collect();
+        Self { scratch, costs }
+    }
+    pub(crate) fn cost(&self, p: Point) -> Option<f64> {
+        self.scratch.cost(p)
+    }
+    pub(crate) fn route(
+        &self,
+        map: &ArenaMap,
+        goal: Point,
+        threat: Option<Point>,
+        preference: RoutePreference,
+    ) -> Route {
+        let threats: Vec<_> = threat.into_iter().collect();
+        self.route_with_threats(map, goal, &threats, preference)
+    }
+    pub(crate) fn route_with_threats(
+        &self,
+        map: &ArenaMap,
+        goal: Point,
+        threats: &[Point],
+        preference: RoutePreference,
+    ) -> Route {
+        let cache = TerrainCache::without_neighbors(map);
+        self.scratch
+            .route_with_threats(cache.view(map), goal, threats, preference)
+    }
+    fn path(&self, map: &ArenaMap, goal: Point) -> Vec<Point> {
+        let cache = TerrainCache::without_neighbors(map);
+        self.scratch.path(cache.view(map), goal)
+    }
+}
+
+#[inline]
 fn center(width: usize, index: usize) -> Point {
     Point {
         x: (index % width) as f64 + 0.5,
         y: (index / width) as f64 + 0.5,
     }
 }
-fn weighted(
-    map: &ArenaMap,
+
+fn weighted_t(
+    terrain: Terrain<'_>,
     a: Point,
     b: Point,
     time: f64,
@@ -313,7 +656,7 @@ fn weighted(
     preference: RoutePreference,
     revealed: bool,
 ) -> f64 {
-    if preference == RoutePreference::Fastest {
+    if preference == RoutePreference::Fastest || threats.is_empty() {
         return time;
     }
     let risk = [
@@ -325,55 +668,83 @@ fn weighted(
         b,
     ]
     .into_iter()
-    .map(|p| exposure(map, p, threats, revealed))
+    .map(|p| exposure(terrain, p, threats, revealed))
     .fold(0.0_f64, f64::max);
     time * (1.0 + 2.0 * risk)
 }
-fn exposure(map: &ArenaMap, p: Point, threats: &[Point], revealed: bool) -> f64 {
+
+#[cfg(test)]
+fn weighted(
+    map: &ArenaMap,
+    a: Point,
+    b: Point,
+    time: f64,
+    threats: &[Point],
+    preference: RoutePreference,
+    revealed: bool,
+) -> f64 {
+    let cache = TerrainCache::without_neighbors(map);
+    weighted_t(cache.view(map), a, b, time, threats, preference, revealed)
+}
+
+fn exposure(terrain: Terrain<'_>, p: Point, threats: &[Point], revealed: bool) -> f64 {
     let mut risk = 0.0_f64;
     for &enemy in threats {
-        risk = risk.max(map::exposure(map, enemy, p, revealed));
+        risk = risk.max(map::exposure_t(terrain, enemy, p, revealed));
         if risk >= 1.0 {
             break;
         }
     }
     risk
 }
+
+pub(crate) struct RouteRequest<'a> {
+    pub from: Point,
+    pub goal: Point,
+    pub threats: &'a [Point],
+    pub preference: RoutePreference,
+    pub revealed: bool,
+}
+
 impl Route {
-    pub(crate) fn prepare(
+    pub(crate) fn prepare_with(
         &mut self,
-        map: &ArenaMap,
-        from: Point,
-        goal: Point,
-        threats: &[Point],
-        preference: RoutePreference,
-        revealed: bool,
+        terrain: Terrain<'_>,
+        scratch: &mut SearchScratch,
+        req: RouteRequest<'_>,
     ) {
-        let same_threat = self.threats.len() == threats.len()
-            && self
-                .threats
-                .iter()
-                .zip(threats)
-                .all(|(a, b)| a.distance(*b) < 2.0);
-        if self.goal == Some(goal)
+        let same_threat =
+            self.threats.len() == req.threats.len()
+                && self.threats.iter().zip(req.threats).all(|(a, b)| {
+                    a.distance(*b) < crate::definitions::TUNING.threat_moved_distance
+                });
+        if self.goal == Some(req.goal)
             && same_threat
-            && self.preference == Some(preference)
-            && self.revealed == revealed
+            && self.preference == Some(req.preference)
+            && self.revealed == req.revealed
         {
             return;
         }
-        let search = Search::for_targets(map, from, threats, preference, revealed, &[goal]);
-        *self = search.route_with_threats(map, goal, threats, preference);
+        scratch.run_astar(
+            terrain,
+            req.from,
+            req.goal,
+            req.threats,
+            req.preference,
+            req.revealed,
+        );
+        *self = scratch.route_with_threats(terrain, req.goal, req.threats, req.preference);
     }
-    pub(crate) fn advance(
+
+    pub(crate) fn advance_t(
         &mut self,
-        map: &ArenaMap,
+        terrain: Terrain<'_>,
         mut position: Point,
         mut budget: f64,
     ) -> Point {
         while self.next < self.path.len() && budget > 1e-10 {
             let target = self.path[self.next];
-            let (next, used) = map::advance_toward(map, position, target, budget);
+            let (next, used) = map::advance_toward_t(terrain, position, target, budget);
             position = next;
             budget -= used;
             if position.distance(target) < 1e-7 {
@@ -384,6 +755,38 @@ impl Route {
         }
         position
     }
+
+    #[cfg(test)]
+    pub(crate) fn prepare(
+        &mut self,
+        map: &ArenaMap,
+        from: Point,
+        goal: Point,
+        threats: &[Point],
+        preference: RoutePreference,
+        revealed: bool,
+    ) {
+        let cache = TerrainCache::new(map);
+        let mut scratch = SearchScratch::new(cache.width, cache.height);
+        self.prepare_with(
+            cache.view(map),
+            &mut scratch,
+            RouteRequest {
+                from,
+                goal,
+                threats,
+                preference,
+                revealed,
+            },
+        );
+    }
+
+    #[cfg(test)]
+    pub(crate) fn advance(&mut self, map: &ArenaMap, position: Point, budget: f64) -> Point {
+        let cache = TerrainCache::without_neighbors(map);
+        self.advance_t(cache.view(map), position, budget)
+    }
+
     pub(crate) fn clear(&mut self) {
         *self = Self::default();
     }

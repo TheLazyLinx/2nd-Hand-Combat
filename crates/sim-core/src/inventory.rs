@@ -137,6 +137,23 @@ pub(crate) struct Inventory {
     max_weight: u32,
     max_volume: u32,
     next_id: Option<u32>,
+    weight_grams: u32,
+    stowed_volume_ml: u32,
+    load_factor: f64,
+}
+#[inline]
+fn compute_load_factor(weight: u32, volume: u32, max_weight: u32, max_volume: u32) -> f64 {
+    let weight_fraction = if max_weight == 0 {
+        0.0
+    } else {
+        weight as f64 / max_weight as f64
+    };
+    let volume_fraction = if max_volume == 0 {
+        0.0
+    } else {
+        volume as f64 / max_volume as f64
+    };
+    1.0 - 0.25 * weight_fraction - 0.15 * volume_fraction
 }
 impl Inventory {
     pub(crate) fn new() -> Self {
@@ -165,7 +182,7 @@ impl Inventory {
             .max()
             .unwrap_or(0)
             .checked_add(1);
-        let inventory = Self {
+        let mut inventory = Self {
             entries,
             left,
             right,
@@ -173,6 +190,9 @@ impl Inventory {
             max_weight,
             max_volume,
             next_id,
+            weight_grams: 0,
+            stowed_volume_ml: 0,
+            load_factor: 1.0,
         };
         inventory.validate()?;
         Ok(inventory)
@@ -221,11 +241,14 @@ impl Inventory {
         }
         Ok((weight, volume))
     }
-    fn validate(&self) -> Result<(), InventoryError> {
+    fn validate(&mut self) -> Result<(), InventoryError> {
         let (weight, volume) = self.totals()?;
         if weight > self.max_weight || volume > self.max_volume {
             return Err(InventoryError::Capacity);
         }
+        self.weight_grams = weight;
+        self.stowed_volume_ml = volume;
+        self.load_factor = compute_load_factor(weight, volume, self.max_weight, self.max_volume);
         Ok(())
     }
     pub(crate) fn count(&self, id: &str) -> u32 {
@@ -235,29 +258,19 @@ impl Inventory {
             .map(|e| e.quantity)
             .sum()
     }
-    pub(crate) fn held_weapon(&self) -> Option<WeaponDefinition> {
+    pub(crate) fn held_weapon_spec(&self) -> Option<&'static crate::definitions::WeaponSpec> {
         [self.left, self.right]
             .into_iter()
             .flatten()
             .find_map(|id| {
                 let entry = self.entries.iter().find(|entry| entry.id == id)?;
                 let weapon_id = spec(&entry.item_id).ok()?.weapon?;
-                crate::definitions::weapon(weapon_id)
+                crate::definitions::weapon_spec(weapon_id)
             })
     }
+    #[inline]
     pub(crate) fn load_factor(&self) -> f64 {
-        let (weight, volume) = self.totals().expect("valid inventory");
-        let weight_fraction = if self.max_weight == 0 {
-            0.0
-        } else {
-            weight as f64 / self.max_weight as f64
-        };
-        let volume_fraction = if self.max_volume == 0 {
-            0.0
-        } else {
-            volume as f64 / self.max_volume as f64
-        };
-        1.0 - 0.25 * weight_fraction - 0.15 * volume_fraction
+        self.load_factor
     }
     // Operations act on a candidate so failed intermediate steps never alter the inventory.
     fn stow_all(&mut self) -> Result<(), InventoryError> {
@@ -326,24 +339,33 @@ impl Inventory {
         Ok(())
     }
     pub(crate) fn consume(&mut self, id: &str) -> Result<(), InventoryError> {
-        if !spec(id)?.consumable() {
+        let item = spec(id)?;
+        if !item.consumable() {
             return Err(InventoryError::NotConsumable);
         }
-        let mut candidate = self.clone();
-        let entry = candidate
+        let idx = self
             .entries
-            .iter_mut()
-            .find(|entry| {
+            .iter()
+            .position(|entry| {
                 entry.item_id == id
                     && entry.quantity > 0
-                    && candidate.left != Some(entry.id)
-                    && candidate.right != Some(entry.id)
+                    && self.left != Some(entry.id)
+                    && self.right != Some(entry.id)
             })
             .ok_or(InventoryError::Unavailable)?;
-        entry.quantity -= 1;
-        candidate.record_use(id)?;
-        candidate.validate()?;
-        *self = candidate;
+        if let Some(used) = self.uses.iter().find(|used| used.item_id == id) {
+            used.count.checked_add(1).ok_or(InventoryError::Overflow)?;
+        }
+        self.entries[idx].quantity -= 1;
+        self.weight_grams -= item.mass;
+        self.stowed_volume_ml -= item.volume;
+        self.load_factor = compute_load_factor(
+            self.weight_grams,
+            self.stowed_volume_ml,
+            self.max_weight,
+            self.max_volume,
+        );
+        self.record_use(id)?;
         Ok(())
     }
     pub(crate) fn can_use(&self, id: &str) -> bool {
@@ -351,7 +373,6 @@ impl Inventory {
         if !item.consumable() {
             return false;
         }
-        let (_, volume) = self.totals().expect("valid inventory");
         let entry = if item.hands == 0 {
             self.entries.iter().find(|entry| {
                 entry.item_id == id
@@ -366,7 +387,7 @@ impl Inventory {
         };
         let Some(entry) = entry else { return false };
         if item.hands != 0 {
-            let mut stowed = volume;
+            let mut stowed = self.stowed_volume_ml;
             for (index, held_id) in [self.left, self.right]
                 .into_iter()
                 .enumerate()
@@ -448,16 +469,15 @@ impl Inventory {
         Ok(())
     }
     pub(crate) fn snapshot(&self) -> InventorySnapshot {
-        let (weight, volume) = self.totals().expect("valid inventory");
         InventorySnapshot {
             entries: self.entries.clone(),
             left_hand: self.left,
             right_hand: self.right,
-            weight_grams: weight,
-            stowed_volume_ml: volume,
+            weight_grams: self.weight_grams,
+            stowed_volume_ml: self.stowed_volume_ml,
             max_weight_grams: self.max_weight,
             max_stowed_volume_ml: self.max_volume,
-            load_factor: self.load_factor(),
+            load_factor: self.load_factor,
             uses: self.uses.clone(),
         }
     }

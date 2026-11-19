@@ -1,20 +1,52 @@
-use crate::{item_actions::Action, map, perception, types::*, unit::Unit};
+//! Post-movement perception refresh, per-tick item/weapon action execution, and simultaneous damage.
+
+use crate::{
+    battle::StepTimer, item_actions::Action, map, perception, terrain::Terrain, types::*,
+    unit::Unit,
+};
+
+#[cfg(test)]
+use crate::terrain::TerrainCache;
+
+#[cfg(test)]
 pub(crate) fn execute(units: &mut [Unit], map: &ArenaMap, rng: &mut u64, tick: u32) {
-    let observations: Vec<_> = (0..units.len())
-        .map(|i| {
-            if units[i].hp > 0.0 {
-                perception::observe_all(units, map, i, tick)
-            } else {
-                vec![]
-            }
-        })
-        .collect();
-    for (u, seen) in units.iter_mut().zip(&observations) {
+    let cache = TerrainCache::without_neighbors(map);
+    let terrain = cache.view(map);
+    let pre = vec![Vec::new(); units.len()];
+    let moved = vec![true; units.len()];
+    let mut post = vec![Vec::new(); units.len()];
+    execute_with_context(
+        units,
+        terrain,
+        rng,
+        tick,
+        &pre,
+        &moved,
+        &mut post,
+        &mut crate::battle::NoopTimer,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_with_context<T: StepTimer>(
+    units: &mut [Unit],
+    terrain: Terrain<'_>,
+    rng: &mut u64,
+    tick: u32,
+    pre_observations: &[Vec<usize>],
+    moved: &[bool],
+    observations: &mut [Vec<usize>],
+    timer: &mut T,
+) {
+    perception::refresh_post_movement(units, terrain, tick, pre_observations, moved, observations);
+    for (u, seen) in units.iter_mut().zip(observations.iter()) {
         if !seen.is_empty() {
             u.last_contact = tick;
         }
     }
-    let actions = crate::item_actions::select(units, map, tick, &observations);
+    timer.mark_post_perception();
+    let actions = crate::item_actions::select(units, terrain, tick, observations);
+    timer.mark_item_actions();
     let mut damage = vec![0.0; units.len()];
     let mut heals = vec![false; units.len()];
     for (i, action) in actions.into_iter().enumerate() {
@@ -55,7 +87,7 @@ pub(crate) fn execute(units: &mut [Unit], map: &ArenaMap, rng: &mut u64, tick: u
                 for (k, v) in units.iter().enumerate() {
                     if v.hp > 0.0
                         && v.position.distance(target) <= crate::consumables::BLAST_RADIUS
-                        && map::visible(map, target, v.position, 0.1, 1.0)
+                        && map::visible_t(terrain, target, v.position, 0.1, 1.0)
                     {
                         damage[k] += crate::consumables::GRENADE_DAMAGE;
                     }
@@ -64,9 +96,9 @@ pub(crate) fn execute(units: &mut [Unit], map: &ArenaMap, rng: &mut u64, tick: u
             Some(Action::Rifle(j, exposure, weapon)) => {
                 units[i]
                     .inventory
-                    .consume(&weapon.ammo_item_id)
+                    .consume(weapon.ammo_item_id)
                     .expect("selected ammunition remains available");
-                if units[i].inventory.count(&weapon.ammo_item_id) == 0 {
+                if units[i].inventory.count(weapon.ammo_item_id) == 0 {
                     units[i].needs_decision = true;
                 }
                 units[i].shots += 1;
@@ -101,6 +133,7 @@ pub(crate) fn execute(units: &mut [Unit], map: &ArenaMap, rng: &mut u64, tick: u
             u.goal = None;
         }
     }
+    timer.mark_combat();
 }
 #[cfg(test)]
 mod tests {

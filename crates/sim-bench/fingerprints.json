@@ -1,0 +1,29 @@
+{
+  "seeds": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10
+  ],
+  "scenarios": {
+    "engagement_long": "19e12a1abae4c26a",
+    "engagement_short": "baeb8f151390f9d7",
+    "fallback_high": "b77dd16544d6982e",
+    "fallback_none": "363f5f54e5d6a728",
+    "grenades_any_safe": "efabe05e8d4bc671",
+    "grenades_never": "d48243d7e37ec187",
+    "medical_low_health": "19dc997790743c44",
+    "medical_never": "235464847c6dc567",
+    "position_balanced": "e4c1368ac58e76cc",
+    "position_concealment": "6d4a8c3420b7e444",
+    "position_cover": "e4c1368ac58e76cc",
+    "route_fastest": "c7f84076e8959a71",
+    "route_protected": "55c6b5bac64f3c52"
+  }
+}

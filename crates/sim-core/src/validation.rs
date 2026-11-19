@@ -206,19 +206,13 @@ pub fn analyze_scenario(s: &Scenario) -> ScenarioAnalysis {
     }
     let structural_valid = true;
     let validation = validate_scenario(s, true);
-    let mut occupancy = vec![false; (m.width * m.height) as usize];
-    for o in &m.obstacles {
-        for y in o.y..o.y + o.height {
-            for x in o.x..o.x + o.width {
-                occupancy[(y * m.width + x) as usize] = true;
-            }
-        }
-    }
+    let cache = crate::terrain::TerrainCache::without_neighbors(m);
+    let terrain = cache.view(m);
     let mut patrol_errors = m
         .patrol
         .iter()
         .copied()
-        .filter(|p| grid_blocked(m, &occupancy, *p));
+        .filter(|p| map::blocked_t(terrain, *p));
     let mut issues: Vec<AnalysisIssue> = validation
         .issues
         .into_iter()
@@ -249,9 +243,9 @@ pub fn analyze_scenario(s: &Scenario) -> ScenarioAnalysis {
             position: None,
         });
     }
-    let w = m.width as usize;
-    let h = m.height as usize;
-    let occupied = occupancy;
+    let w = cache.width;
+    let h = cache.height;
+    let occupied = &cache.occupied;
     let point = |i: usize| Point {
         x: (i % w) as f64 + 0.5,
         y: (i / w) as f64 + 0.5,
@@ -261,8 +255,8 @@ pub fn analyze_scenario(s: &Scenario) -> ScenarioAnalysis {
             let p = point(i);
             TerrainCellInfo {
                 surface: map::surface(m, p),
-                elevation: map::ground_height(m, p),
-                movement_multiplier: map::movement_multiplier(m, p, p),
+                elevation: cache.ground_height(m, p),
+                movement_multiplier: cache.cell_surfaces[i].move_mult,
                 traversable: !occupied[i],
             }
         })
@@ -289,7 +283,7 @@ pub fn analyze_scenario(s: &Scenario) -> ScenarioAnalysis {
                 {
                     continue;
                 }
-                if map::ground_traversable(m, point(a), point(b)) {
+                if cache.is_flat || map::ground_traversable(m, point(a), point(b)) {
                     links[a].push(b);
                     links[b].push(a);
                 } else {

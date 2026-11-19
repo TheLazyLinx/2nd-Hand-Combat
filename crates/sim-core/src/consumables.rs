@@ -1,11 +1,11 @@
-use crate::types::ItemUseProperties;
+use crate::{definitions::TUNING, types::ItemUseProperties};
 use std::collections::BTreeMap;
-pub(crate) const BLAST_RADIUS: f64 = 1.5;
-pub(crate) const GRENADE_DAMAGE: f64 = 40.0;
-pub(crate) const GRENADE_COOLDOWN_SECONDS: f64 = 3.0;
-pub(crate) const MEDICAL_HEAL: f64 = 25.0;
-pub(crate) const NEED_USE_THRESHOLD: f64 = 50.0;
-pub(crate) const NEED_RESTORE: f64 = 40.0;
+pub(crate) const BLAST_RADIUS: f64 = TUNING.blast_radius;
+pub(crate) const GRENADE_DAMAGE: f64 = TUNING.grenade_damage;
+pub(crate) const GRENADE_COOLDOWN_SECONDS: f64 = TUNING.grenade_cooldown_seconds;
+pub(crate) const MEDICAL_HEAL: f64 = TUNING.medical_heal;
+pub(crate) const NEED_USE_THRESHOLD: f64 = TUNING.need_use_threshold;
+pub(crate) const NEED_RESTORE: f64 = TUNING.need_restore;
 pub(crate) fn catalog() -> BTreeMap<String, ItemUseProperties> {
     let mut result = BTreeMap::new();
     result.insert(
