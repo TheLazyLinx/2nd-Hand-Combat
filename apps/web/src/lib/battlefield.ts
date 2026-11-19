@@ -337,7 +337,7 @@ export class Battlefield {
   ) {
     g.clear().circle(0, 0, 0.38).fill({ color: 0x20271f, alpha: 0.3 });
     g.circle(0, -0.05, 0.3)
-      .fill(state?.behavior === 'Dead' ? 0x777368 : color)
+      .fill(state?.behavior === 'dead' ? 0x777368 : color)
       .stroke({ color: 0xf4ead0, width: 0.07 });
     g.circle(0, -0.08, 0.1).fill(0xe5d6b1);
     if (selected) g.circle(0, 0, 0.48).stroke({ color: 0xf6e3ad, width: 0.07 });

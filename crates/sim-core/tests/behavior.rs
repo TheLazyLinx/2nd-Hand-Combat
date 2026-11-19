@@ -145,7 +145,7 @@ fn same_seed_repeats_and_timeout_is_reported() {
     run(&mut a, 25);
     run(&mut b, 25);
     assert_eq!(a.snapshot(), b.snapshot());
-    assert_eq!(a.snapshot().result.unwrap().reason, "timeout");
+    assert_eq!(a.snapshot().result.unwrap().reason, ResultReason::Timeout);
 }
 #[test]
 fn cover_changes_hit_probability_without_reducing_hit_damage() {
@@ -248,7 +248,7 @@ fn combat_reports_elimination_and_casualties() {
     let mut b = Battle::new(scenario(p(3.5, 3.5), p(7.5, 3.5))).unwrap();
     assert!(run_until(&mut b, 1000, |snap| snap.result.is_some()));
     let result = b.snapshot().result.unwrap();
-    assert_eq!(result.reason, "elimination");
+    assert_eq!(result.reason, ResultReason::Elimination);
     assert!(result.winner.is_some());
     assert_eq!(result.factions.iter().map(|f| f.casualties).sum::<u32>(), 1);
 }
@@ -440,7 +440,7 @@ fn every_terrain_preset_repeats_snapshots_and_restores_the_same_start() {
             moved |= a.snapshot().units[0].position != initial.units[0].position;
         }
         assert!(moved, "{} did not move", preset.name);
-        assert_eq!(a.snapshot().result.unwrap().reason, "timeout");
+        assert_eq!(a.snapshot().result.unwrap().reason, ResultReason::Timeout);
         assert_eq!(Battle::new(s).unwrap().snapshot(), initial);
     }
 }
@@ -479,8 +479,8 @@ fn three_faction_battle_continues_until_no_hostile_pair_survives_and_lists_all_f
     let result = battle.snapshot().result.unwrap();
     assert_eq!(result.factions.len(), 3);
     assert!(matches!(
-        result.reason.as_str(),
-        "elimination" | "simultaneous_elimination"
+        result.reason,
+        ResultReason::Elimination | ResultReason::SimultaneousElimination
     ));
 }
 
@@ -583,7 +583,7 @@ fn stop_concludes_battle_as_stopped_draw_and_preserves_existing_result() {
     assert!(!battle.is_finished());
     let stopped = battle.stop();
     assert_eq!(stopped.winner, None);
-    assert_eq!(stopped.reason, "stopped");
+    assert_eq!(stopped.reason, ResultReason::Stopped);
     assert!((stopped.elapsed - 1.0).abs() < 1e-9);
     assert_eq!(stopped.factions.len(), 2);
     assert!(stopped

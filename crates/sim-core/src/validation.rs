@@ -69,13 +69,16 @@ fn loadout_error_message(error: InventoryError) -> &'static str {
     }
 }
 
-fn structural_problem(s: &Scenario) -> Option<&'static str> {
+fn structural_problem(s: &Scenario) -> Option<(IssueCode, &'static str)> {
     let r = crate::definitions::editor_rules();
     let m = &s.map;
     if !(r.min_dimension..=r.max_dimension).contains(&m.width)
         || !(r.min_dimension..=r.max_dimension).contains(&m.height)
     {
-        return Some("Map dimensions must be between 1 and 128.");
+        return Some((
+            IssueCode::InvalidMapDimensions,
+            "Map dimensions must be between 1 and 128.",
+        ));
     }
     let area = (m.width * m.height) as usize;
     if m.surfaces.len() != area
@@ -85,7 +88,10 @@ fn structural_problem(s: &Scenario) -> Option<&'static str> {
             .iter()
             .all(|h| h.is_finite() && *h >= r.min_elevation && *h <= r.max_elevation)
     {
-        return Some("Terrain arrays must match map dimensions and contain finite elevations between -100 and 100.");
+        return Some((
+            IssueCode::InvalidTerrainArrays,
+            "Terrain arrays must match map dimensions and contain finite elevations between -100 and 100.",
+        ));
     }
     if s.units.len() > ENGINE_MAX_UNITS
         || s.factions.len() > ENGINE_MAX_FACTIONS
@@ -93,9 +99,10 @@ fn structural_problem(s: &Scenario) -> Option<&'static str> {
         || m.patrol.len() > area
         || m.obstacles.len() > area
     {
-        return Some(
+        return Some((
+            IssueCode::ExcessiveScenarioElements,
             "The draft contains too many factions, units, loadouts, patrol points, or obstacles.",
-        );
+        ));
     }
     if s.loadouts
         .iter()
@@ -107,7 +114,10 @@ fn structural_problem(s: &Scenario) -> Option<&'static str> {
             )
         })
     {
-        return Some("A custom loadout contains too many item entries.");
+        return Some((
+            IssueCode::ExcessiveLoadoutEntries,
+            "A custom loadout contains too many item entries.",
+        ));
     }
     let mut footprint = 0usize;
     for o in &m.obstacles {
@@ -119,28 +129,38 @@ fn structural_problem(s: &Scenario) -> Option<&'static str> {
             || o.height_metres <= 0.0
             || o.height_metres > r.max_obstacle_height
         {
-            return Some(
+            return Some((
+                IssueCode::InvalidObstacle,
                 "Obstacles must have positive dimensions and height and fit inside the map.",
-            );
+            ));
         }
         footprint += (o.width * o.height) as usize;
         if footprint > area * 4 {
-            return Some("The combined obstacle footprint is too large.");
+            return Some((
+                IssueCode::ExcessiveObstacleFootprint,
+                "The combined obstacle footprint is too large.",
+            ));
         }
-    }
-    if s.units.iter().any(|u| !doctrine_valid(&u.doctrine)) {
-        return Some("Inventory doctrine values are outside supported ranges or inconsistent.");
     }
     if s.time_limit.is_some_and(|limit| !limit.is_finite())
         || s.units.iter().any(|u| {
-            !u.doctrine.engagement_distance.is_finite() || !u.doctrine.fallback_hp.is_finite()
+            !u.doctrine.engagement_distance.is_finite()
+                || !u.doctrine.fallback_hp.is_finite()
+                || !u.doctrine.grenades.max_distance.is_finite()
+                || !u.doctrine.grenades.safety_margin.is_finite()
+                || !u.doctrine.medical.hp_threshold.is_finite()
+                || !u.doctrine.medical.safe_seconds.is_finite()
+                || !u.doctrine.medical.cooldown_seconds.is_finite()
         })
         || m.patrol
             .iter()
             .chain(s.units.iter().map(|u| &u.position))
             .any(|p| !p.x.is_finite() || !p.y.is_finite())
     {
-        return Some("Scenario coordinates and numeric values must be finite.");
+        return Some((
+            IssueCode::NonFiniteValue,
+            "Scenario coordinates and numeric values must be finite.",
+        ));
     }
     None
 }
@@ -171,35 +191,50 @@ pub fn validate_scenario_with_rules(
     for_start: bool,
     rules: &ModeRules,
 ) -> Validation {
-    if let Some(message) = structural_problem(s) {
+    if let Some((code, message)) = structural_problem(s) {
         return Validation {
             valid: false,
             issues: vec![ValidationIssue {
+                code,
                 message: message.into(),
                 unit_id: None,
             }],
         };
     }
     let mut issues = Vec::new();
-    let mut add = |message: String, unit_id| {
-        issues.push(ValidationIssue { message, unit_id });
+    let mut add = |code: IssueCode, message: String, unit_id| {
+        issues.push(ValidationIssue {
+            code,
+            message,
+            unit_id,
+        });
     };
     if s.factions.len() < 2 {
-        add("At least two distinct factions are required.".into(), None);
+        add(
+            IssueCode::TooFewFactions,
+            "At least two distinct factions are required.".into(),
+            None,
+        );
     }
     let mut faction_ids = HashSet::new();
     for faction in &s.factions {
         if !faction_ids.insert(faction.id) {
-            add("Faction IDs must be unique.".into(), None);
+            add(
+                IssueCode::DuplicateFactionId,
+                "Faction IDs must be unique.".into(),
+                None,
+            );
         }
         if faction.name.trim().is_empty() || faction.name.len() > 64 {
             add(
+                IssueCode::InvalidFactionName,
                 "Faction names must be non-empty and at most 64 characters.".into(),
                 None,
             );
         }
         if faction.color > 0x00FF_FFFF {
             add(
+                IssueCode::InvalidFactionColor,
                 "Faction colors must be valid 24-bit RGB values.".into(),
                 None,
             );
@@ -208,6 +243,7 @@ pub fn validate_scenario_with_rules(
     if let Some(limit) = s.time_limit {
         if !limit.is_finite() || !(1.0..=3600.0).contains(&limit) {
             add(
+                IssueCode::InvalidTimeLimit,
                 "Time limit must be between 1 and 3600 seconds.".into(),
                 None,
             );
@@ -217,24 +253,41 @@ pub fn validate_scenario_with_rules(
     for loadout in &s.loadouts {
         if loadout.name.trim().is_empty() || loadout.name.len() > 64 {
             add(
+                IssueCode::InvalidLoadoutName,
                 "Loadout names must be non-empty and at most 64 characters.".into(),
                 None,
             );
         } else if !loadout_names.insert(loadout.name.as_str()) {
-            add("Loadout names must be unique.".into(), None);
+            add(
+                IssueCode::DuplicateLoadoutName,
+                "Loadout names must be unique.".into(),
+                None,
+            );
         }
         let mut seen_items = HashSet::new();
         for entry in &loadout.entries {
             match item_id_by_str(&entry.item_id) {
                 Ok(id) => {
                     if !seen_items.insert(id) {
-                        add("Loadout contains duplicate item entries.".into(), None);
+                        add(
+                            IssueCode::InvalidLoadout,
+                            "Loadout contains duplicate item entries.".into(),
+                            None,
+                        );
                     }
                 }
-                Err(err) => add(loadout_error_message(err).into(), None),
+                Err(err) => add(
+                    IssueCode::InvalidLoadout,
+                    loadout_error_message(err).into(),
+                    None,
+                ),
             }
             if entry.quantity == 0 {
-                add("Loadout item quantities must be positive.".into(), None);
+                add(
+                    IssueCode::InvalidLoadout,
+                    "Loadout item quantities must be positive.".into(),
+                    None,
+                );
             }
         }
     }
@@ -249,28 +302,49 @@ pub fn validate_scenario_with_rules(
             }
         }
         if overlap {
-            add("Obstacles must not overlap.".into(), None);
+            add(
+                IssueCode::OverlappingObstacle,
+                "Obstacles must not overlap.".into(),
+                None,
+            );
         }
     }
     for p in &s.map.patrol {
         if grid_blocked(&s.map, &occupied, *p) {
-            add("Patrol points must be on open ground.".into(), None);
+            add(
+                IssueCode::BlockedPatrolPoint,
+                "Patrol points must be on open ground.".into(),
+                None,
+            );
         }
     }
     let mut ids = HashSet::new();
     for (i, u) in s.units.iter().enumerate() {
         if !ids.insert(u.id) {
-            add("Unit IDs must be unique.".into(), Some(u.id));
+            add(
+                IssueCode::DuplicateUnitId,
+                "Unit IDs must be unique.".into(),
+                Some(u.id),
+            );
         }
         if !faction_ids.contains(&u.faction) {
-            add("Unit faction is not in the scenario.".into(), Some(u.id));
+            add(
+                IssueCode::UnknownUnitFaction,
+                "Unit faction is not in the scenario.".into(),
+                Some(u.id),
+            );
         }
         let spec = unit_spec(&u.definition_id);
         if spec.is_none() {
-            add("Unknown unit definition.".into(), Some(u.id));
+            add(
+                IssueCode::UnknownUnitDefinition,
+                "Unknown unit definition.".into(),
+                Some(u.id),
+            );
         }
         if grid_blocked(&s.map, &occupied, u.position) {
             add(
+                IssueCode::BlockedUnitPlacement,
                 "Unit must be placed on open ground inside the map.".into(),
                 Some(u.id),
             );
@@ -279,7 +353,11 @@ pub fn validate_scenario_with_rules(
             .iter()
             .any(|other| other.position.distance(u.position) < 0.5)
         {
-            add("Unit placements overlap.".into(), Some(u.id));
+            add(
+                IssueCode::OverlappingUnitPlacement,
+                "Unit placements overlap.".into(),
+                Some(u.id),
+            );
         }
         if !u.doctrine.engagement_distance.is_finite()
             || !(2.0..=12.0).contains(&u.doctrine.engagement_distance)
@@ -287,7 +365,15 @@ pub fn validate_scenario_with_rules(
             || !(0.0..=100.0).contains(&u.doctrine.fallback_hp)
         {
             add(
+                IssueCode::InvalidDoctrine,
                 "Doctrine values are outside the supported range.".into(),
+                Some(u.id),
+            );
+        }
+        if !doctrine_valid(&u.doctrine) {
+            add(
+                IssueCode::InvalidInventoryDoctrine,
+                "Inventory doctrine values are outside supported ranges or inconsistent.".into(),
                 Some(u.id),
             );
         }
@@ -300,10 +386,15 @@ pub fn validate_scenario_with_rules(
                             spec.max_weight_grams,
                             spec.max_stowed_volume_ml,
                         ) {
-                            add(loadout_error_message(err).into(), Some(u.id));
+                            add(
+                                IssueCode::InvalidLoadout,
+                                loadout_error_message(err).into(),
+                                Some(u.id),
+                            );
                         }
                     } else {
                         add(
+                            IssueCode::UnknownUnitLoadout,
                             "Unit references an unknown scenario loadout.".into(),
                             Some(u.id),
                         );
@@ -315,7 +406,11 @@ pub fn validate_scenario_with_rules(
                         spec.max_weight_grams,
                         spec.max_stowed_volume_ml,
                     ) {
-                        add(loadout_error_message(err).into(), Some(u.id));
+                        add(
+                            IssueCode::InvalidLoadout,
+                            loadout_error_message(err).into(),
+                            Some(u.id),
+                        );
                     }
                 }
             }
@@ -330,11 +425,12 @@ pub fn validate_scenario_with_rules(
                 } else {
                     format!("A faction can have at most {max} units.")
                 };
-                add(message, None);
+                add(IssueCode::FactionUnitLimitExceeded, message, None);
             }
         }
         if for_start && count == 0 {
             add(
+                IssueCode::EmptyFaction,
                 "Each faction needs at least one unit to start.".into(),
                 None,
             );
@@ -359,12 +455,13 @@ pub fn validate_skirmish_scenario(s: &Scenario, for_start: bool) -> Validation {
 /// Analyze an editable draft without querying malformed terrain, using explicit mode rules.
 pub fn analyze_scenario_with_rules(s: &Scenario, rules: &ModeRules) -> ScenarioAnalysis {
     let m = &s.map;
-    if let Some(message) = structural_problem(s) {
+    if let Some((code, message)) = structural_problem(s) {
         return ScenarioAnalysis {
             structural_valid: false,
             can_start: false,
             issues: vec![AnalysisIssue {
-                severity: "error".into(),
+                code,
+                severity: IssueSeverity::Error,
                 message: message.into(),
                 unit_id: None,
                 position: None,
@@ -390,14 +487,15 @@ pub fn analyze_scenario_with_rules(s: &Scenario, rules: &ModeRules) -> ScenarioA
                 .unit_id
                 .and_then(|id| s.units.iter().find(|u| u.id == id).map(|u| u.position))
                 .or_else(|| {
-                    if issue.message == "Patrol points must be on open ground." {
+                    if issue.code == IssueCode::BlockedPatrolPoint {
                         patrol_errors.next()
                     } else {
                         None
                     }
                 });
             AnalysisIssue {
-                severity: "error".into(),
+                code: issue.code,
+                severity: IssueSeverity::Error,
                 message: issue.message,
                 unit_id: issue.unit_id,
                 position,
@@ -406,7 +504,8 @@ pub fn analyze_scenario_with_rules(s: &Scenario, rules: &ModeRules) -> ScenarioA
         .collect();
     if m.patrol.is_empty() {
         issues.push(AnalysisIssue {
-            severity: "warning".into(),
+            code: IssueCode::NoPatrolPoints,
+            severity: IssueSeverity::Warning,
             message: "The map has no patrol points.".into(),
             unit_id: None,
             position: None,
@@ -468,7 +567,8 @@ pub fn analyze_scenario_with_rules(s: &Scenario, rules: &ModeRules) -> ScenarioA
     }
     if !steep_edges.is_empty() {
         issues.push(AnalysisIssue {
-            severity: "warning".into(),
+            code: IssueCode::SteepTransitions,
+            severity: IssueSeverity::Warning,
             message: "Steep terrain blocks some transitions.".into(),
             unit_id: None,
             position: steep_edges.first().copied(),
@@ -494,7 +594,8 @@ pub fn analyze_scenario_with_rules(s: &Scenario, rules: &ModeRules) -> ScenarioA
     }
     if regions > 1 {
         issues.push(AnalysisIssue {
-            severity: "warning".into(),
+            code: IssueCode::DisconnectedRegions,
+            severity: IssueSeverity::Warning,
             message: "Open terrain contains disconnected regions.".into(),
             unit_id: None,
             position: None,
@@ -669,11 +770,14 @@ mod tests {
         assert!(result
             .issues
             .iter()
-            .any(|i| i.severity == "error" && i.position == Some(Point { x: 1.5, y: 0.5 })));
+            .any(|i| i.severity == IssueSeverity::Error
+                && i.code == IssueCode::BlockedPatrolPoint
+                && i.position == Some(Point { x: 1.5, y: 0.5 })));
         assert!(result
             .issues
             .iter()
-            .any(|i| i.severity == "warning" && i.message.contains("disconnected")));
+            .any(|i| i.severity == IssueSeverity::Warning
+                && i.code == IssueCode::DisconnectedRegions));
     }
 
     #[test]
@@ -688,7 +792,10 @@ mod tests {
         assert!(result
             .issues
             .iter()
-            .any(|i| i.severity == "warning" && i.message.contains("no patrol")));
+            .any(|i| i.severity == IssueSeverity::Warning && i.code == IssueCode::NoPatrolPoints));
+        assert!(result.issues.iter().any(|i| {
+            i.severity == IssueSeverity::Warning && i.code == IssueCode::SteepTransitions
+        }));
     }
 
     #[test]
@@ -729,12 +836,36 @@ mod tests {
         s.units[0].doctrine.grenades.max_distance = 2.1;
         let invalid = validate_scenario(&s, false);
         assert!(!invalid.valid);
+        assert_eq!(invalid.issues[0].code, IssueCode::InvalidInventoryDoctrine);
+        assert_eq!(invalid.issues[0].unit_id, Some(1));
         assert!(invalid.issues[0].message.contains("Inventory doctrine"));
+
+        // Out-of-range grenade settings remain structurally safe/editable in Map Maker,
+        // while still blocking battle start with a located error issue.
         s.units[0].doctrine.grenades.max_distance = 2.0;
         s.units[0].doctrine.grenades.safety_margin = 0.5;
-        assert!(!analyze_scenario(&s).structural_valid);
+        let unsafe_range = analyze_scenario(&s);
+        assert!(unsafe_range.structural_valid);
+        assert!(!unsafe_range.can_start);
+        assert!(!unsafe_range.cells.is_empty());
+        assert!(unsafe_range.issues.iter().any(|i| {
+            i.severity == IssueSeverity::Error
+                && i.code == IssueCode::InvalidInventoryDoctrine
+                && i.unit_id == Some(1)
+                && i.position == Some(Point { x: 2.5, y: 2.5 })
+        }));
+
+        // Non-finite inventory doctrine values are still rejected at the structural gate.
+        s.units[0].doctrine.medical.hp_threshold = f64::NAN;
+        let non_finite = analyze_scenario(&s);
+        assert!(!non_finite.structural_valid);
+        assert_eq!(non_finite.issues[0].code, IssueCode::NonFiniteValue);
+
+        s.units[0].doctrine.medical.hp_threshold = 50.0;
         s.units[0].doctrine.grenades.max_distance = 3.0;
-        assert!(analyze_scenario(&s).structural_valid);
+        let fixed = analyze_scenario(&s);
+        assert!(fixed.structural_valid);
+        assert!(validate_scenario(&s, false).valid);
     }
 
     #[test]

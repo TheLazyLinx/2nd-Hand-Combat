@@ -72,10 +72,55 @@ impl Scenario {
     }
 }
 
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS), ts(rename_all = "camelCase"))]
+#[serde(rename_all = "camelCase")]
+pub enum IssueSeverity {
+    Error,
+    Warning,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[cfg_attr(feature = "ts-export", derive(ts_rs::TS), ts(rename_all = "camelCase"))]
+#[serde(rename_all = "camelCase")]
+pub enum IssueCode {
+    InvalidMapDimensions,
+    InvalidTerrainArrays,
+    ExcessiveScenarioElements,
+    ExcessiveLoadoutEntries,
+    InvalidObstacle,
+    ExcessiveObstacleFootprint,
+    NonFiniteValue,
+    TooFewFactions,
+    DuplicateFactionId,
+    InvalidFactionName,
+    InvalidFactionColor,
+    InvalidTimeLimit,
+    InvalidLoadoutName,
+    DuplicateLoadoutName,
+    InvalidLoadout,
+    OverlappingObstacle,
+    BlockedPatrolPoint,
+    DuplicateUnitId,
+    UnknownUnitFaction,
+    UnknownUnitDefinition,
+    BlockedUnitPlacement,
+    OverlappingUnitPlacement,
+    InvalidDoctrine,
+    InvalidInventoryDoctrine,
+    UnknownUnitLoadout,
+    FactionUnitLimitExceeded,
+    EmptyFaction,
+    NoPatrolPoints,
+    SteepTransitions,
+    DisconnectedRegions,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS), ts(rename_all = "camelCase"))]
 #[serde(rename_all = "camelCase")]
 pub struct ValidationIssue {
+    pub code: IssueCode,
     pub message: String,
     pub unit_id: Option<u32>,
 }
@@ -91,7 +136,8 @@ pub struct Validation {
 #[cfg_attr(feature = "ts-export", derive(ts_rs::TS), ts(rename_all = "camelCase"))]
 #[serde(rename_all = "camelCase")]
 pub struct AnalysisIssue {
-    pub severity: String,
+    pub code: IssueCode,
+    pub severity: IssueSeverity,
     pub message: String,
     pub unit_id: Option<u32>,
     pub position: Option<Point>,
@@ -117,7 +163,6 @@ pub struct Catalog {
     pub surfaces: Vec<SurfaceDefinition>,
     pub low_obstacle_height: f64,
     pub full_obstacle_height: f64,
-    pub terrain_cells: Vec<Vec<TerrainCellInfo>>,
     pub units: Vec<UnitDefinition>,
     pub weapons: Vec<WeaponDefinition>,
     pub default_factions: Vec<FactionDefinition>,

@@ -1,5 +1,5 @@
 ﻿<script lang="ts">
-  import { factionColorHex, unitDefinition } from '../lib/factions';
+  import { behaviorLabel, factionColorHex, unitDefinition } from '../lib/factions';
   import type { Catalog, FactionDefinition, Scenario, Snapshot } from '../lib/types';
   export let faction: FactionDefinition;
   export let side: number;
@@ -28,6 +28,7 @@
   </div>
   {#each roster as unit (unit.id)}
     {@const unitDef = catalog ? unitDefinition(catalog, unit.definitionId) : null}
+    {@const live = snapshot?.units.find((u) => u.id === unit.id)}
     <button
       class:active={selected === unit.id}
       class="roster-unit"
@@ -37,11 +38,11 @@
       <span class="unit-icon">&#10022;</span>
       <span>
         <strong>{unitDef?.name ?? unit.definitionId} #{unit.id}</strong><small>
-          {snapshot?.units.find((u) => u.id === unit.id)?.behavior ?? 'Ready for deployment'}
+          {live ? behaviorLabel(live.behavior) : 'Ready for deployment'}
         </small>
       </span>
       <span class="unit-hp">
-        {snapshot?.units.find((u) => u.id === unit.id)?.hp ?? unitDef?.maxHp} HP
+        {live?.hp ?? unitDef?.maxHp} HP
       </span>
     </button>
   {/each}

@@ -14,14 +14,23 @@ use crate::terrain::TerrainCache;
 pub(crate) fn execute(units: &mut [Unit], map: &ArenaMap, tick: u32) {
     let cache = TerrainCache::new(map);
     let mut scratch = SearchScratch::new(cache.width, cache.height);
+    let mut threat_positions = Vec::new();
     let mut moved = vec![false; units.len()];
-    execute_with(units, cache.view(map), &mut scratch, tick, &mut moved);
+    execute_with(
+        units,
+        cache.view(map),
+        &mut scratch,
+        &mut threat_positions,
+        tick,
+        &mut moved,
+    );
 }
 
 pub(crate) fn execute_with(
     units: &mut [Unit],
     terrain: Terrain<'_>,
     scratch: &mut SearchScratch,
+    threat_positions: &mut Vec<Point>,
     tick: u32,
     moved: &mut [bool],
 ) {
@@ -33,19 +42,14 @@ pub(crate) fn execute_with(
         }
         let start = u.nav.position;
         if let Some(goal) = u.nav.goal {
-            let fallback = u.perception.memory.as_ref().map(|m| m.position);
-            let threats = if u.perception.known_threats.is_empty() {
-                fallback.as_slice()
-            } else {
-                u.perception.known_threats.as_slice()
-            };
+            u.perception.fill_threat_positions(threat_positions);
             u.nav.route.prepare_with(
                 terrain,
                 scratch,
                 RouteRequest {
                     from: u.nav.position,
                     goal,
-                    threats,
+                    threats: threat_positions.as_slice(),
                     preference: u.placement.doctrine.route_preference,
                     revealed: tick < u.combat.revealed_until,
                 },
@@ -59,9 +63,7 @@ pub(crate) fn execute_with(
                 && u.nav.position.distance(goal)
                     < crate::definitions::TUNING.advance_arrive_distance
             {
-                if let Some(memory) = &mut u.perception.memory {
-                    memory.investigated = true;
-                }
+                u.perception.mark_primary_investigated();
                 u.nav.goal = None;
                 u.nav.route.clear();
             }
@@ -75,7 +77,6 @@ pub(crate) fn execute_with(
         } else {
             0.0
         };
-        u.combat.tick_cooldowns();
     }
 }
 
@@ -134,5 +135,21 @@ mod tests {
         execute(std::slice::from_mut(&mut unit), &map, 3);
         execute(std::slice::from_mut(&mut lighter), &map, 3);
         assert!(lighter.nav.position.distance(start) > unit.nav.position.distance(start));
+    }
+
+    #[test]
+    fn movement_does_not_tick_combat_cooldowns() {
+        let map = ArenaMap::flat(5, 5);
+        let mut u = Unit::new(UnitPlacement {
+            id: 1,
+            faction: 0,
+            definition_id: "infantry".into(),
+            position: Point { x: 2.5, y: 2.5 },
+            doctrine: crate::definitions::catalog().default_doctrine,
+            loadout: None,
+        });
+        u.combat.set_attack_cooldown(3);
+        execute(std::slice::from_mut(&mut u), &map, 1);
+        assert_eq!(u.combat.action_cooldown, 3);
     }
 }

@@ -194,7 +194,7 @@ fn run_one(
     let reason = battle
         .snapshot()
         .result
-        .map(|r| r.reason)
+        .map(|r| r.reason.as_str().to_owned())
         .unwrap_or_else(|| "unfinished".into());
     let to_mean_ms = |ns: u64, count: usize| ns as f64 / 1e6 / count.max(1) as f64;
 

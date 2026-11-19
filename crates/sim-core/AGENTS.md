@@ -6,22 +6,22 @@ Area guide for Rust simulation work. Follow root [AGENTS.md](../../AGENTS.md) (i
 
 | Path | Responsibility |
 | --- | --- |
-| `src/types/` | Public wire data structures (`mod.rs`, `map.rs`, `doctrine.rs`, `inventory.rs`, `scenario.rs`, `snapshot.rs`), `serde` + `ts-rs` export (`export_typescript_types`), and JSON-vs-TS contract parity tests (`ts_export_tests`). |
-| `src/battle.rs` | `Battle` orchestrator: validates scenarios on `Battle::new`, owns unit list, tick counter, seeded RNG, fixed-step `step()` pipeline (sustainment → perception → decisions → movement → combat/item actions → results), and `snapshot()` assembly. |
-| `src/unit.rs` | Componentized runtime `Unit` state (`Vitals`, `NavigationState`, `PerceptionMemory`, `CombatState` with per-slot `WeaponState`, `SustainmentState`, `Inventory`), `Memory`, `ThreatMemory`, and low-HP / equipped-weapon withdrawal queries. |
+| `src/types/` | Public wire data structures (`mod.rs`, `map.rs`, `doctrine.rs`, `inventory.rs`, `scenario.rs`, `snapshot.rs`), typed wire enums (`Behavior`, `ResultReason`, `IssueSeverity`, `IssueCode`, `ItemCategory`, `ItemUseKind`), `serde` + `ts-rs` export (`export_typescript_types`), and JSON-vs-TS contract parity tests (`ts_export_tests`). |
+| `src/battle.rs` | `Battle` orchestrator: validates scenarios on `Battle::new`, owns unit list, tick counter, seeded RNG, fixed-step `step()` pipeline (sustainment → perception → decisions → movement → combat/item actions → results), `stop()`, and `snapshot()` assembly. |
+| `src/unit.rs` | Componentized runtime `Unit` state (`Vitals`, `NavigationState`, `PerceptionMemory` with canonical `threats` + `primary_id`, `CombatState` with per-slot `WeaponState`, `SustainmentState`, `Inventory`) and low-HP / equipped-weapon withdrawal queries. |
 | `src/map.rs` | Static terrain queries: map bounds and clearance (`inside`, `blocked_t`), surface lookup, NW-to-SE triangulated `ground_height`, unified ray evaluation (`visible_t`, `clear_t`, `shot_fraction_t`, `detectable_t`, `exposure_t`), swept-radius clearance (`sweep_clear_t`), segment `travel_time_t`, and single-pass `advance_toward_t`. |
 | `src/terrain.rs` | Static per-battle `TerrainCache` (pre-rasterized cell occupancy/obstacle heights, `CellSurface`, flat-map fast path, and precomputed 8-neighbour travel-time table) and `Terrain<'_>` view. |
 | `src/navigation.rs` | Deterministic 8-neighbor weighted pathfinding (`SearchScratch` with generation-stamped buffers, single-goal A*, multi-target Dijkstra) and cached per-unit `Route` planning and advancement (`Fastest` and `Protected`). |
 | `src/perception.rs` | Per-unit hostile spotting (`observe_all_into`, `refresh_post_movement`) using `is_hostile`, sorted by distance then unit ID, respecting spotting range, vegetation, and firing reveal. |
 | `src/decisions/` | Modular tactical doctrine evaluation (`mod.rs`, `fallback.rs`, `engage.rs`, `reposition.rs`, `investigate.rs`, `patrol.rs`): bounded candidate scans, faction `PatrolDirection`, and typed proposals producing `Decision` intentions without mutating world state. |
 | `src/item_actions.rs` | Per-tick candidate-proposal action selection (`ActionProposal` + `ActionPriority`) using typed `ItemId` / `ItemCategory` / `WeaponId` lookups: chooses at most one action per soldier per tick (medical → water → ration → grenade → weapon fire) according to doctrine and capacity. |
-| `src/inventory.rs` | Game-wide item specifications (`ITEMS`, no starting quantities), typed `ItemId` / `ItemCategory`, `Inventory::from_loadout`, hand/stow capacity accounting (`Inventory`), atomic `use_item_by_id`/`consume_item`, weight/volume load factor, and inventory snapshot generation. |
+| `src/inventory.rs` | Game-wide item specifications (`ITEMS`, no starting quantities), typed `ItemId`, `Inventory::from_loadout`, hand/stow capacity accounting (`Inventory`), atomic `use_item_by_id`/`consume_item`, weight/volume load factor, and inventory snapshot generation. |
 | `src/consumables.rs` | Consumable constants (blast radius, grenade damage/cooldown, medical heal, need threshold/restore) and `ItemUseProperties` catalog entries. |
-| `src/combat.rs` | Post-movement perception refresh, calls `item_actions::select`, executes item uses, grenade blasts, and RNG weapon hit rolls, applies firing reveal, and resolves simultaneous damage and `max_hp`-clamped healing. |
-| `src/movement.rs` | Executes movement goals along cached `Route`s using the load/needs-scaled fixed step budget, computes live `movement_multiplier`, and ticks per-slot weapon/action cooldowns. |
+| `src/combat.rs` | Post-movement perception refresh, per-slot weapon/action cooldown ticking, `item_actions::select`, item uses, grenade blasts, RNG weapon hit rolls, firing reveal, and simultaneous damage and `max_hp`-clamped healing. |
+| `src/movement.rs` | Executes movement goals along cached `Route`s using the load/needs-scaled fixed step budget and computes live `movement_multiplier`. |
 | `src/sustainment.rs` | Per-tick nutrition/hydration drain, shortage thresholds, and needs mobility factor. |
-| `src/validation.rs` | Structural safety gate (`structural_problem`, `ENGINE_MAX_*`), mode-decoupled `validate_scenario` / `validate_skirmish_scenario` (`ModeRules`), custom loadout validation, and `analyze_scenario` (cell readouts, steep edges, located errors/warnings). |
-| `src/results.rs` | Hostility-based terminal battle evaluation across arbitrary factions (`elimination`, `simultaneous_elimination`, `timeout` with nullable `time_limit`). |
+| `src/validation.rs` | Structural safety gate (`structural_problem`, `ENGINE_MAX_*`), mode-decoupled `validate_scenario` / `validate_skirmish_scenario` (`ModeRules`), custom loadout and doctrine validation with typed `IssueCode`/`IssueSeverity`, and `analyze_scenario` (cell readouts, steep edges, located errors/warnings). |
+| `src/results.rs` | Hostility-based terminal battle evaluation across arbitrary factions (`ResultReason::{Elimination, SimultaneousElimination, Timeout, Stopped}` with nullable `time_limit`). |
 | `src/definitions.rs` | Game-wide unit (`UnitSpec` + default loadouts), weapon (`WeaponSpec`), surface, and default faction registries, `TUNING`, map presets, `editor_rules`, `doctrine_rules`, and `catalog()`. |
 | `src/bin/export_types.rs` | Thin binary invoked by `npm run gen:types` to print `sim_core::export_typescript_types()`. |
 | `src/oracles.rs` | `#[cfg(test)]` frozen geometry and pathfinding reference oracles guarding hot-path optimizations. |
@@ -46,7 +46,7 @@ Area guide for Rust simulation work. Follow root [AGENTS.md](../../AGENTS.md) (i
 ### Adding an item or weapon
 
 1. Confirm base materials stay game-wide in Rust ([ADR 0002](../../docs/decisions/0002-base-materials-and-custom-loadouts.md)); check human-approval rules if adding dependencies or changing scope docs.
-2. Add the item specification to `DATA` in `src/inventory.rs` (ID, name, category, `mass`, `volume`, `hands`, optional `weapon`, and starting quantity until loadouts separate in Phase 3).
+2. Add the item specification to `ITEMS` in `src/inventory.rs` (ID, name, `ItemCategory`, `mass`, `volume`, `hands`, optional `weapon`).
 3. Wire definitions:
    - **Weapon:** Add its `WeaponDefinition` and lookup in `src/definitions.rs`, and include it in `catalog().weapons`.
    - **Consumable / usable item:** Add tuning constants and its `ItemUseProperties` entry in `src/consumables.rs`.

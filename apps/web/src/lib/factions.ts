@@ -1,6 +1,7 @@
 /** Faction presentation helpers, unit definition lookup, and setup inventory preview. */
 
 import type {
+  Behavior,
   Catalog,
   FactionDefinition,
   InventoryEntry,
@@ -10,6 +11,20 @@ import type {
   UnitDefinition,
   UnitPlacement,
 } from './types';
+
+const BEHAVIOR_LABELS: Record<Behavior, string> = {
+  searching: 'Searching',
+  investigating: 'Investigating',
+  advancing: 'Advancing',
+  engaging: 'Engaging',
+  fallingBack: 'Falling back',
+  defending: 'Defending',
+  dead: 'Dead',
+};
+
+export function behaviorLabel(behavior: Behavior): string {
+  return BEHAVIOR_LABELS[behavior];
+}
 
 export const FACTION_PALETTE: readonly number[] = [
   0x315f62, 0xa24f32, 0x5d6e37, 0x7a5482, 0xb5892b, 0x3f6493, 0x8c4a64, 0x4b7a6b,

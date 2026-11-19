@@ -1,4 +1,7 @@
-use crate::{definitions::TUNING, types::ItemUseProperties};
+use crate::{
+    definitions::TUNING,
+    types::{ItemUseKind, ItemUseProperties},
+};
 use std::collections::BTreeMap;
 pub(crate) const BLAST_RADIUS: f64 = TUNING.blast_radius;
 pub(crate) const GRENADE_DAMAGE: f64 = TUNING.grenade_damage;
@@ -11,29 +14,29 @@ pub(crate) fn catalog() -> BTreeMap<String, ItemUseProperties> {
     result.insert(
         "frag-grenade".into(),
         ItemUseProperties {
-            kind: "grenade".into(),
             blast_radius: Some(BLAST_RADIUS),
             damage: Some(GRENADE_DAMAGE),
             cooldown_seconds: Some(GRENADE_COOLDOWN_SECONDS),
-            ..Default::default()
+            ..ItemUseProperties::new(ItemUseKind::Grenade)
         },
     );
     result.insert(
         "medical-supply".into(),
         ItemUseProperties {
-            kind: "medical".into(),
             heal_amount: Some(MEDICAL_HEAL),
-            ..Default::default()
+            ..ItemUseProperties::new(ItemUseKind::Medical)
         },
     );
-    for id in ["ration", "water"] {
+    for (id, kind) in [
+        ("ration", ItemUseKind::Ration),
+        ("water", ItemUseKind::Water),
+    ] {
         result.insert(
             id.into(),
             ItemUseProperties {
-                kind: id.into(),
                 restore_amount: Some(NEED_RESTORE),
                 use_threshold: Some(NEED_USE_THRESHOLD),
-                ..Default::default()
+                ..ItemUseProperties::new(kind)
             },
         );
     }

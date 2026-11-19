@@ -2,14 +2,8 @@
 //! staggered tactical decisions, movement, combat, and victory evaluation.
 
 use crate::{
-    decisions,
-    definitions::TUNING,
-    navigation::SearchScratch,
-    perception,
-    terrain::TerrainCache,
-    types::*,
-    unit::{Memory, ThreatMemory, Unit},
-    validation::validate_scenario,
+    decisions, definitions::TUNING, navigation::SearchScratch, perception, terrain::TerrainCache,
+    types::*, unit::Unit, validation::validate_scenario,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -119,6 +113,7 @@ pub struct Battle {
     scenario: Scenario,
     terrain: TerrainCache,
     scratch: SearchScratch,
+    threat_positions: Vec<Point>,
     pre_observations: Vec<Vec<usize>>,
     post_observations: Vec<Vec<usize>>,
     moved: Vec<bool>,
@@ -156,6 +151,7 @@ impl Battle {
             scenario,
             terrain,
             scratch,
+            threat_positions: Vec::new(),
             pre_observations: vec![Vec::new(); unit_count],
             post_observations: vec![Vec::new(); unit_count],
             moved: vec![false; unit_count],
@@ -221,69 +217,16 @@ impl Battle {
             if self.units[i].vitals.hp <= 0.0 {
                 continue;
             }
-            if !seen.is_empty() {
-                self.units[i].perception.last_contact = self.tick;
-            }
-            let previous_target = self.units[i].perception.target;
             contacts.clear();
             contacts.extend(seen.iter().map(|&j| {
                 let u = &self.units[j];
                 (u.placement.id, u.nav.position)
             }));
-            let first_seen = seen
-                .first()
-                .map(|&j| (self.units[j].placement.id, self.units[j].nav.position));
-            let me = &mut self.units[i];
-            me.perception
-                .threat_memories
-                .retain(|memory| self.tick - memory.tick <= TUNING.memory_expiry_ticks);
-            for &(id, position) in &contacts {
-                if let Some(memory) = me
-                    .perception
-                    .threat_memories
-                    .iter_mut()
-                    .find(|memory| memory.id == id)
-                {
-                    memory.position = position;
-                    memory.tick = self.tick;
-                } else {
-                    me.perception.threat_memories.push(ThreatMemory {
-                        id,
-                        position,
-                        tick: self.tick,
-                    });
-                }
-            }
-            me.perception
-                .threat_memories
-                .sort_by_key(|memory| memory.id);
-            me.perception.known_threats.clear();
-            me.perception
-                .known_threats
-                .extend(me.perception.threat_memories.iter().map(|m| m.position));
-            if let Some((id, position)) = first_seen {
-                me.perception.target = Some(id);
-                if previous_target != Some(id) {
-                    me.needs_decision = true;
-                }
-                me.perception.memory = Some(Memory {
-                    position,
-                    tick: self.tick,
-                    investigated: false,
-                });
-            } else {
-                me.perception.target = None;
-                if previous_target.is_some() {
-                    me.needs_decision = true;
-                }
-                if me
-                    .perception
-                    .memory
-                    .as_ref()
-                    .is_some_and(|m| self.tick - m.tick > TUNING.memory_expiry_ticks)
-                {
-                    me.perception.memory = None;
-                }
+            if self.units[i]
+                .perception
+                .update_observations(self.tick, &contacts)
+            {
+                self.units[i].needs_decision = true;
             }
         }
         timer.mark_perception();
@@ -328,6 +271,7 @@ impl Battle {
                 },
                 terrain,
                 &mut self.scratch,
+                &mut self.threat_positions,
                 patrol_direction,
             )));
         }
@@ -343,15 +287,13 @@ impl Battle {
                     u.nav.route = route;
                 }
                 if decision.mark_investigated {
-                    if let Some(memory) = &mut u.perception.memory {
-                        memory.investigated = true;
-                    }
+                    u.perception.mark_primary_investigated();
                 }
                 u.needs_decision = false;
                 u.nav.fallback_threat = if fallback.is_some() && fallback == old_fallback {
                     u.nav.fallback_threat
                 } else if fallback.is_some() {
-                    u.perception.memory.as_ref().map(|m| m.position)
+                    u.perception.primary().map(|m| m.position)
                 } else {
                     None
                 };
@@ -362,6 +304,7 @@ impl Battle {
             &mut self.units,
             terrain,
             &mut self.scratch,
+            &mut self.threat_positions,
             self.tick,
             &mut self.moved,
         );
@@ -488,13 +431,13 @@ mod tests {
         battle.step();
         assert_eq!(battle.snapshot().units[0].target_id, None);
         assert_eq!(
-            battle.units[0].perception.memory.as_ref().unwrap().position,
+            battle.units[0].perception.primary().unwrap().position,
             Point { x: 4.5, y: 5.5 }
         );
         for _ in 0..201 {
             battle.step();
         }
-        assert!(battle.units[0].perception.memory.is_none());
+        assert!(battle.units[0].perception.primary().is_none());
         assert_eq!(battle.snapshot().units[0].behavior, Behavior::Searching);
     }
 
@@ -564,7 +507,7 @@ mod tests {
         battle.units[1].vitals.hp = 20.0;
         battle.step();
         let result = battle.snapshot().result.unwrap();
-        assert_eq!(result.reason, "simultaneous_elimination");
+        assert_eq!(result.reason, ResultReason::SimultaneousElimination);
         assert_eq!(result.winner, None);
         assert_eq!(result.factions.iter().map(|f| f.casualties).sum::<u32>(), 2);
     }
@@ -583,10 +526,10 @@ mod tests {
             u.placement.doctrine.fallback_hp = 100.0;
         }
         battle.step();
-        assert_eq!(battle.units[0].perception.threat_memories.len(), 2);
+        assert_eq!(battle.units[0].perception.threats().len(), 2);
         let last_seen = battle.units[0]
             .perception
-            .threat_memories
+            .threats()
             .iter()
             .find(|m| m.id == 2)
             .unwrap()
@@ -603,11 +546,11 @@ mod tests {
         battle.units[2].nav.position = Point { x: 7.5, y: 7.5 };
         battle.step();
         assert_eq!(battle.units[0].perception.target, Some(3));
-        assert_eq!(battle.units[0].perception.known_threats.len(), 2);
+        assert_eq!(battle.units[0].perception.threats().len(), 2);
         assert_eq!(
             battle.units[0]
                 .perception
-                .threat_memories
+                .threats()
                 .iter()
                 .find(|m| m.id == 2)
                 .unwrap()
@@ -620,7 +563,7 @@ mod tests {
         battle.step();
         assert!(battle.units[0]
             .perception
-            .threat_memories
+            .threats()
             .iter()
             .all(|m| m.id != 2));
     }
@@ -642,7 +585,10 @@ mod tests {
         }
         let terminal = battle.snapshot();
         assert_eq!(terminal, replay.snapshot());
-        assert_eq!(terminal.result.as_ref().unwrap().reason, "timeout");
+        assert_eq!(
+            terminal.result.as_ref().unwrap().reason,
+            ResultReason::Timeout
+        );
         for unit in &terminal.units {
             assert_eq!(unit.hp, 100.0);
             assert_eq!(unit.shots_fired, 0);
@@ -680,20 +626,11 @@ mod tests {
             height: 20,
             height_metres: 2.5,
         });
-        battle.units[0].perception.memory = Some(Memory {
-            position: Point { x: 20.5, y: 10.5 },
-            tick: 0,
-            investigated: false,
-        });
+        battle.units[0]
+            .perception
+            .remember_for_test(Point { x: 20.5, y: 10.5 }, 0);
         battle.step();
-        assert!(
-            battle.units[0]
-                .perception
-                .memory
-                .as_ref()
-                .unwrap()
-                .investigated
-        );
+        assert!(battle.units[0].perception.primary().unwrap().investigated);
         assert_eq!(battle.snapshot().units[0].behavior, Behavior::Searching);
         assert!(battle.snapshot().units[0].position.x > 2.5);
     }

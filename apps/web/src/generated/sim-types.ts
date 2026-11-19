@@ -1,7 +1,8 @@
 // Generated from crates/sim-core by `npm run gen:types`. Do not edit by hand.
 
 export type AnalysisIssue = {
-  severity: string;
+  code: IssueCode;
+  severity: IssueSeverity;
   message: string;
   unitId: number | null;
   position: Point | null;
@@ -16,19 +17,18 @@ export type ArenaMap = {
 };
 export type BattleResult = {
   winner: number | null;
-  reason: string;
+  reason: ResultReason;
   elapsed: number;
   factions: Array<FactionResult>;
 };
 export type Behavior =
-  'Searching' | 'Investigating' | 'Advancing' | 'Engaging' | 'Falling back' | 'Defending' | 'Dead';
+  'searching' | 'investigating' | 'advancing' | 'engaging' | 'fallingBack' | 'defending' | 'dead';
 export type Catalog = {
   editorRules: EditorRules;
   maps: Array<MapPreset>;
   surfaces: Array<SurfaceDefinition>;
   lowObstacleHeight: number;
   fullObstacleHeight: number;
-  terrainCells: Array<Array<TerrainCellInfo>>;
   units: Array<UnitDefinition>;
   weapons: Array<WeaponDefinition>;
   defaultFactions: Array<FactionDefinition>;
@@ -92,18 +92,52 @@ export type InventorySnapshot = {
   loadFactor: number;
   uses: Array<ItemUse>;
 };
+export type IssueCode =
+  | 'invalidMapDimensions'
+  | 'invalidTerrainArrays'
+  | 'excessiveScenarioElements'
+  | 'excessiveLoadoutEntries'
+  | 'invalidObstacle'
+  | 'excessiveObstacleFootprint'
+  | 'nonFiniteValue'
+  | 'tooFewFactions'
+  | 'duplicateFactionId'
+  | 'invalidFactionName'
+  | 'invalidFactionColor'
+  | 'invalidTimeLimit'
+  | 'invalidLoadoutName'
+  | 'duplicateLoadoutName'
+  | 'invalidLoadout'
+  | 'overlappingObstacle'
+  | 'blockedPatrolPoint'
+  | 'duplicateUnitId'
+  | 'unknownUnitFaction'
+  | 'unknownUnitDefinition'
+  | 'blockedUnitPlacement'
+  | 'overlappingUnitPlacement'
+  | 'invalidDoctrine'
+  | 'invalidInventoryDoctrine'
+  | 'unknownUnitLoadout'
+  | 'factionUnitLimitExceeded'
+  | 'emptyFaction'
+  | 'noPatrolPoints'
+  | 'steepTransitions'
+  | 'disconnectedRegions';
+export type IssueSeverity = 'error' | 'warning';
+export type ItemCategory = 'weapon' | 'ammo' | 'grenade' | 'tool' | 'medical' | 'ration' | 'water';
 export type ItemDefinition = {
   id: string;
   name: string;
-  category: string;
+  category: ItemCategory;
   massGrams: number;
   volumeMl: number;
   handsRequired: number;
   weaponId: string | null;
 };
 export type ItemUse = { itemId: string; count: number };
+export type ItemUseKind = 'grenade' | 'medical' | 'ration' | 'water';
 export type ItemUseProperties = {
-  kind: string;
+  kind: ItemUseKind;
   blastRadius?: number;
   damage?: number;
   cooldownSeconds?: number;
@@ -132,6 +166,7 @@ export type OutOfAmmoBehavior = 'withdraw' | 'continueDoctrine';
 export type PatrolDirection = 'forward' | 'reverse';
 export type Point = { x: number; y: number };
 export type PositionPreference = 'balanced' | 'cover' | 'concealment';
+export type ResultReason = 'elimination' | 'simultaneous_elimination' | 'timeout' | 'stopped';
 export type RoutePreference = 'fastest' | 'protected';
 export type Rule = { min: number; max: number; step: number };
 export type Scenario = {
@@ -222,7 +257,7 @@ export type UnitSnapshot = {
   mobilityFactor: number;
 };
 export type Validation = { valid: boolean; issues: Array<ValidationIssue> };
-export type ValidationIssue = { message: string; unitId: number | null };
+export type ValidationIssue = { code: IssueCode; message: string; unitId: number | null };
 export type WeaponDefinition = {
   id: string;
   range: number;

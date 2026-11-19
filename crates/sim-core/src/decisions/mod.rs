@@ -113,24 +113,33 @@ pub(crate) fn decide(
 ) -> Decision {
     let cache = TerrainCache::new(map);
     let mut scratch = SearchScratch::new(cache.width, cache.height);
-    decide_with(input, cache.view(map), &mut scratch, patrol_direction)
+    let mut threat_positions = Vec::new();
+    decide_with(
+        input,
+        cache.view(map),
+        &mut scratch,
+        &mut threat_positions,
+        patrol_direction,
+    )
 }
 
 pub(crate) fn decide_with(
     input: &DecisionInput<'_>,
     terrain: Terrain<'_>,
     scratch: &mut SearchScratch,
+    threat_positions: &mut Vec<Point>,
     patrol_direction: PatrolDirection,
 ) -> Decision {
     let me = input.unit;
     let threat = input
         .visible_enemy
-        .or_else(|| me.perception.memory.as_ref().map(|m| m.position));
+        .or_else(|| me.perception.primary().map(|m| m.position));
+    me.perception.fill_threat_positions(threat_positions);
     let fallback_threat = threat;
-    let threats = if me.perception.known_threats.is_empty() {
+    let threats = if threat_positions.is_empty() {
         fallback_threat.as_slice()
     } else {
-        me.perception.known_threats.as_slice()
+        threat_positions.as_slice()
     };
     let ctx = DecisionContext {
         input,
@@ -165,7 +174,7 @@ pub(crate) fn decide_with(
 #[cfg(test)]
 mod acceptance_tests {
     use super::*;
-    use crate::{definitions::catalog, map, unit::Memory};
+    use crate::{definitions::catalog, map};
     fn p(x: f64, y: f64) -> Point {
         Point { x, y }
     }
@@ -232,11 +241,7 @@ mod acceptance_tests {
         });
         let mut u = unit(p(5.5, 5.5));
         let enemy = p(9.5, 5.5);
-        u.perception.memory = Some(Memory {
-            position: enemy,
-            tick: 0,
-            investigated: false,
-        });
+        u.perception.remember_for_test(enemy, 0);
         let d = choose(&u, &map, None);
         let goal = d.goal.unwrap();
         assert_ne!(goal, enemy);
@@ -261,11 +266,7 @@ mod acceptance_tests {
             height_metres: 2.5,
         });
         let mut u = unit(p(5.5, 5.5));
-        u.perception.memory = Some(Memory {
-            position: p(9.5, 5.5),
-            tick: 0,
-            investigated: false,
-        });
+        u.perception.remember_for_test(p(9.5, 5.5), 0);
         let d = choose(&u, &map, None);
         assert!(d.mark_investigated);
         assert_eq!(d.behavior, Behavior::Searching);

@@ -483,6 +483,7 @@ fn multiplier(m: &ArenaMap, a: Point, b: Point) -> f64 {
     (slope * surface_definition(surface(m, point(a, b, 0.5))).movement_multiplier).min(1.3)
 }
 
+#[cfg(test)]
 pub(crate) fn movement_multiplier(m: &ArenaMap, a: Point, b: Point) -> f64 {
     multiplier(m, a, b)
 }

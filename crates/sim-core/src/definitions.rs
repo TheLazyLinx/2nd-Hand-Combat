@@ -9,7 +9,6 @@ use crate::{
         item_spec, ItemId, ITEM_ENTRENCHING_TOOL, ITEM_FRAG_GRENADE, ITEM_MEDICAL_SUPPLY,
         ITEM_RATION, ITEM_RIFLE, ITEM_RIFLE_AMMO, ITEM_WATER,
     },
-    map,
     types::*,
 };
 
@@ -376,30 +375,6 @@ pub(crate) fn doctrine_rules() -> DoctrineRules {
 
 pub fn catalog() -> Catalog {
     let maps = presets();
-    let terrain_cells = maps
-        .iter()
-        .map(|preset| {
-            let m = &preset.map;
-            let cache = crate::terrain::TerrainCache::without_neighbors(m);
-            let terrain = cache.view(m);
-            (0..m.height)
-                .flat_map(|y| {
-                    (0..m.width).map(move |x| {
-                        let p = Point {
-                            x: x as f64 + 0.5,
-                            y: y as f64 + 0.5,
-                        };
-                        TerrainCellInfo {
-                            surface: map::surface(m, p),
-                            elevation: map::ground_height(m, p),
-                            movement_multiplier: map::movement_multiplier(m, p, p),
-                            traversable: !map::blocked_t(terrain, p),
-                        }
-                    })
-                })
-                .collect()
-        })
-        .collect();
     Catalog {
         editor_rules: editor_rules(),
         maps,
@@ -415,7 +390,6 @@ pub fn catalog() -> Catalog {
         .collect(),
         low_obstacle_height: LOW_OBSTACLE_HEIGHT,
         full_obstacle_height: FULL_OBSTACLE_HEIGHT,
-        terrain_cells,
         units: unit_definitions(),
         weapons: weapon_definitions(),
         default_factions: default_factions(),
@@ -442,6 +416,7 @@ pub fn catalog() -> Catalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::map;
     #[test]
     fn presets_connect_opposite_sides() {
         for preset in catalog().maps {

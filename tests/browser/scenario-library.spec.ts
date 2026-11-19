@@ -520,14 +520,13 @@ test('malformed supplied inventory doctrines are rejected without changing the d
   const valid = await upgraded(page, fixture('Invalid doctrine'));
   const missing = structuredClone(valid);
   Reflect.deleteProperty(missing.scenario.units[0].doctrine, 'medical');
-  const invalid = structuredClone(valid);
-  invalid.scenario.units[0].doctrine.grenades.maxDistance = 2;
-  invalid.scenario.units[0].doctrine.grenades.safetyMargin = 1;
+  const unknownPolicy = structuredClone(valid);
+  (unknownPolicy.scenario.units[0].doctrine.grenades as { policy: string }).policy = 'invalid';
   const legacyMalformed = fixture('Malformed legacy doctrine');
   Object.assign(legacyMalformed.scenario.units[0].doctrine, { grenades: { policy: 'never' } });
   for (const [document, error] of [
     [missing, /Medical doctrine/],
-    [invalid, /doctrine|throw|grenade/i],
+    [unknownPolicy, /unknown variant|policy/i],
     [legacyMalformed, /maxDistance|Maximum throw distance/i],
   ] as const) {
     await page.locator('input[type=file]').setInputFiles({
@@ -538,6 +537,30 @@ test('malformed supplied inventory doctrines are rejected without changing the d
     await expect(page.getByRole('alert')).toContainText(error);
     await expect(page.getByLabel('Name', { exact: true })).toHaveValue(originalName);
   }
+});
+
+test('out-of-range inventory doctrine imports as an editable draft with validation errors', async ({
+  page,
+}) => {
+  await openMaker(page);
+  const valid = await upgraded(page, fixture('Out of range inventory doctrine'));
+  const outOfRange = structuredClone(valid);
+  outOfRange.scenario.units[0].doctrine.grenades.maxDistance = 2;
+  outOfRange.scenario.units[0].doctrine.grenades.safetyMargin = 1;
+  await importFile(page, outOfRange);
+  await expect(page.getByLabel('Name', { exact: true })).toHaveValue(outOfRange.name);
+  await expect(page.getByText('Draft can be saved; resolve issues to test.')).toBeVisible();
+  await expect(
+    page.getByText(
+      'error: Inventory doctrine values are outside supported ranges or inconsistent.',
+    ),
+  ).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Test battle', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: '#1 North', exact: true }).click();
+  await page.getByTestId('selected-unit').getByText('Grenades', { exact: true }).click();
+  await page.getByTestId('grenade-distance').fill('5.5');
+  await expect(page.getByText('Ready to test', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Test battle', exact: true })).toBeEnabled();
 });
 
 test(

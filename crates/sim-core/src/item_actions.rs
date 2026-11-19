@@ -7,7 +7,7 @@
 use crate::{
     consumables,
     definitions::{weapon_spec, WeaponSpec, STEP},
-    inventory::{ItemCategory, ItemId},
+    inventory::ItemId,
     map,
     terrain::Terrain,
     types::*,
@@ -184,7 +184,7 @@ fn propose_fire(ctx: &ActionContext<'_>) -> Option<ActionProposal> {
         return None;
     }
     let weapon = weapon_spec(weapon_id);
-    if u.inventory.count_item(weapon.ammo_item) == 0 {
+    if !u.inventory.can_use_item(weapon.ammo_item) {
         return None;
     }
     let j = ctx.observed.first().copied()?;

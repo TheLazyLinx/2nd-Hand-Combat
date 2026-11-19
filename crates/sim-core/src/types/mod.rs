@@ -159,7 +159,6 @@ mod ts_export_tests {
         assert_json_keys_match_ts(&decls, "Obstacle", &cat.maps[0].map.obstacles[0], false);
         assert_json_keys_match_ts(&decls, "Point", &cat.maps[0].map.patrol[0], false);
         assert_json_keys_match_ts(&decls, "SurfaceDefinition", &cat.surfaces[0], false);
-        assert_json_keys_match_ts(&decls, "TerrainCellInfo", &cat.terrain_cells[0][0], false);
         assert_json_keys_match_ts(&decls, "UnitDefinition", &cat.units[0], false);
         assert_json_keys_match_ts(&decls, "WeaponDefinition", &cat.weapons[0], false);
         assert_json_keys_match_ts(&decls, "FactionDefinition", &cat.default_factions[0], false);
@@ -283,6 +282,7 @@ mod ts_export_tests {
             &decls,
             "ValidationIssue",
             &ValidationIssue {
+                code: IssueCode::InvalidDoctrine,
                 message: "example".into(),
                 unit_id: Some(1),
             },
@@ -291,11 +291,13 @@ mod ts_export_tests {
 
         let analysis = crate::analyze_scenario(&scenario);
         assert_json_keys_match_ts(&decls, "ScenarioAnalysis", &analysis, false);
+        assert_json_keys_match_ts(&decls, "TerrainCellInfo", &analysis.cells[0], false);
         assert_json_keys_match_ts(
             &decls,
             "AnalysisIssue",
             &AnalysisIssue {
-                severity: "warning".into(),
+                code: IssueCode::NoPatrolPoints,
+                severity: IssueSeverity::Warning,
                 message: "example".into(),
                 unit_id: None,
                 position: Some(Point { x: 0.5, y: 0.5 }),
@@ -384,6 +386,84 @@ mod ts_export_tests {
                 Behavior::FallingBack,
                 Behavior::Defending,
                 Behavior::Dead,
+            ],
+        );
+        assert_eq!(
+            serde_json::to_string(&Behavior::FallingBack).expect("serialize Behavior"),
+            "\"fallingBack\""
+        );
+        assert_enum_variants_match_ts(
+            &decls,
+            "ResultReason",
+            &[
+                ResultReason::Elimination,
+                ResultReason::SimultaneousElimination,
+                ResultReason::Timeout,
+                ResultReason::Stopped,
+            ],
+        );
+        assert_enum_variants_match_ts(
+            &decls,
+            "IssueSeverity",
+            &[IssueSeverity::Error, IssueSeverity::Warning],
+        );
+        assert_enum_variants_match_ts(
+            &decls,
+            "IssueCode",
+            &[
+                IssueCode::InvalidMapDimensions,
+                IssueCode::InvalidTerrainArrays,
+                IssueCode::ExcessiveScenarioElements,
+                IssueCode::ExcessiveLoadoutEntries,
+                IssueCode::InvalidObstacle,
+                IssueCode::ExcessiveObstacleFootprint,
+                IssueCode::NonFiniteValue,
+                IssueCode::TooFewFactions,
+                IssueCode::DuplicateFactionId,
+                IssueCode::InvalidFactionName,
+                IssueCode::InvalidFactionColor,
+                IssueCode::InvalidTimeLimit,
+                IssueCode::InvalidLoadoutName,
+                IssueCode::DuplicateLoadoutName,
+                IssueCode::InvalidLoadout,
+                IssueCode::OverlappingObstacle,
+                IssueCode::BlockedPatrolPoint,
+                IssueCode::DuplicateUnitId,
+                IssueCode::UnknownUnitFaction,
+                IssueCode::UnknownUnitDefinition,
+                IssueCode::BlockedUnitPlacement,
+                IssueCode::OverlappingUnitPlacement,
+                IssueCode::InvalidDoctrine,
+                IssueCode::InvalidInventoryDoctrine,
+                IssueCode::UnknownUnitLoadout,
+                IssueCode::FactionUnitLimitExceeded,
+                IssueCode::EmptyFaction,
+                IssueCode::NoPatrolPoints,
+                IssueCode::SteepTransitions,
+                IssueCode::DisconnectedRegions,
+            ],
+        );
+        assert_enum_variants_match_ts(
+            &decls,
+            "ItemCategory",
+            &[
+                ItemCategory::Weapon,
+                ItemCategory::Ammo,
+                ItemCategory::Grenade,
+                ItemCategory::Tool,
+                ItemCategory::Medical,
+                ItemCategory::Ration,
+                ItemCategory::Water,
+            ],
+        );
+        assert_enum_variants_match_ts(
+            &decls,
+            "ItemUseKind",
+            &[
+                ItemUseKind::Grenade,
+                ItemUseKind::Medical,
+                ItemUseKind::Ration,
+                ItemUseKind::Water,
             ],
         );
     }
