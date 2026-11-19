@@ -13,8 +13,8 @@ Area guide for Rust simulation work. Follow root [AGENTS.md](../../AGENTS.md) (i
 | `src/terrain.rs` | Static per-battle `TerrainCache` (pre-rasterized cell occupancy/obstacle heights, `CellSurface`, flat-map fast path, and precomputed 8-neighbour travel-time table) and `Terrain<'_>` view. |
 | `src/navigation.rs` | Deterministic 8-neighbor weighted pathfinding (`SearchScratch` with generation-stamped buffers, single-goal A*, multi-target Dijkstra) and cached per-unit `Route` planning and advancement (`Fastest` and `Protected`). |
 | `src/perception.rs` | Per-unit enemy spotting (`observe_all`), sorted by distance then unit ID, respecting spotting range, vegetation, and firing reveal. |
-| `src/decisions.rs` | Tactical doctrine evaluation (`decide`): turns observations, threat memory, ally positions, and unit doctrine into `Decision` intentions (`Behavior`, goal, fallback goal, patrol index, route) without mutating world state. |
-| `src/item_actions.rs` | Per-tick action selection (`select`): chooses at most one action per soldier per tick in strict priority order (medical → water → ration → grenade → rifle) according to doctrine and capacity. |
+| `src/decisions/` | Modular tactical doctrine evaluation (`mod.rs`, `fallback.rs`, `engage.rs`, `reposition.rs`, `investigate.rs`, `patrol.rs`): bounded candidate scans and typed proposals producing `Decision` intentions without mutating world state. |
+| `src/item_actions.rs` | Per-tick candidate-proposal action selection (`ActionProposal` + `ActionPriority`): chooses at most one action per soldier per tick (medical → water → ration → grenade → rifle) according to doctrine and capacity. |
 | `src/inventory.rs` | Game-wide item specifications (`DATA`), default loadout, hand/stow capacity accounting (`Inventory`), atomic `use_item`/`consume`, weight/volume load factor, and inventory snapshot generation. |
 | `src/consumables.rs` | Consumable constants (blast radius, grenade damage/cooldown, medical heal, need threshold/restore) and `ItemUseProperties` catalog entries. |
 | `src/combat.rs` | Post-movement perception refresh, calls `item_actions::select`, executes item uses, grenade blasts, and RNG rifle hit rolls, applies firing reveal, and resolves simultaneous damage and healing. |
@@ -22,7 +22,7 @@ Area guide for Rust simulation work. Follow root [AGENTS.md](../../AGENTS.md) (i
 | `src/sustainment.rs` | Per-tick nutrition/hydration drain, shortage thresholds, and needs mobility factor. |
 | `src/validation.rs` | Structural safety gate (`structural_problem`), `validate_scenario` (draft vs. start readiness), and `analyze_scenario` (cell readouts, steep edges, located errors/warnings). |
 | `src/results.rs` | Terminal battle evaluation (`elimination`, `simultaneous_elimination`, `timeout`). |
-| `src/definitions.rs` | Global tuning constants (`STEP`, `MAX_HP`, `SPEED`, obstacle heights, weapon stats), surface definitions, built-in map presets, `editor_rules`, `doctrine_rules`, and `catalog()`. |
+| `src/definitions.rs` | Global tuning constants (`STEP`, `MAX_HP`, `SPEED`, `TUNING`, `WeaponSpec`, obstacle heights, weapon stats), surface definitions, built-in map presets, `editor_rules`, `doctrine_rules`, and `catalog()`. |
 | `src/bin/export_types.rs` | Thin binary invoked by `npm run gen:types` to print `sim_core::export_typescript_types()`. |
 | `src/oracles.rs` | `#[cfg(test)]` frozen geometry and pathfinding reference oracles guarding hot-path optimizations. |
 | `tests/boundaries.rs` | Enforces that `sim-core` never depends on browser or WASM crates. |

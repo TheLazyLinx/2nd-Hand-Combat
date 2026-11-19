@@ -70,6 +70,32 @@ pub(crate) struct SearchScratch {
     revealed: bool,
 }
 
+enum StopMode<'a, F> {
+    All,
+    AllTargets {
+        remaining: usize,
+    },
+    BestTarget {
+        tie_margin: f64,
+        best_cost: f64,
+    },
+    AStar {
+        goal_index: usize,
+        goal_center: Point,
+    },
+    FirstMatching {
+        predicate: F,
+        found: &'a mut Option<Point>,
+    },
+}
+
+pub(crate) struct SearchParams<'a> {
+    pub start: Point,
+    pub threats: &'a [Point],
+    pub preference: RoutePreference,
+    pub revealed: bool,
+}
+
 impl SearchScratch {
     pub(crate) fn new(width: usize, height: usize) -> Self {
         let len = width * height;
@@ -125,6 +151,28 @@ impl SearchScratch {
         self.previous[index] = prev;
     }
 
+    fn mark_targets(&mut self, terrain: Terrain<'_>, targets: &[Point]) -> usize {
+        let width = terrain.cache.width;
+        let height = terrain.cache.height;
+        let gen = self.gen;
+        let mut count = 0usize;
+        for p in targets {
+            if p.x < 0.0 || p.y < 0.0 {
+                continue;
+            }
+            let x = p.x.floor() as usize;
+            let y = p.y.floor() as usize;
+            if x < width && y < height {
+                let idx = y * width + x;
+                if !terrain.cache.occupied[idx] && self.target_gen[idx] != gen {
+                    self.target_gen[idx] = gen;
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
     pub(crate) fn run_dijkstra(
         &mut self,
         terrain: Terrain<'_>,
@@ -137,39 +185,90 @@ impl SearchScratch {
         let width = terrain.cache.width;
         let height = terrain.cache.height;
         self.reset(width, height, start, revealed);
-        let gen = self.gen;
 
-        let mut count = 0usize;
-        if let Some(targets) = targets {
-            for p in targets {
-                if p.x < 0.0 || p.y < 0.0 {
-                    continue;
-                }
-                let x = p.x.floor() as usize;
-                let y = p.y.floor() as usize;
-                if x < width && y < height {
-                    let idx = y * width + x;
-                    if !terrain.cache.occupied[idx] && self.target_gen[idx] != gen {
-                        self.target_gen[idx] = gen;
-                        count += 1;
-                    }
-                }
-            }
-            if count == 0 {
-                return;
-            }
-        }
-
-        self.seed_start(terrain, start, threats, preference, revealed, None);
-        self.expand(
-            terrain,
+        let params = SearchParams {
+            start,
             threats,
             preference,
             revealed,
-            targets.is_some(),
-            count,
-            None,
+        };
+        let stop = match targets {
+            Some(targets) => {
+                let remaining = self.mark_targets(terrain, targets);
+                if remaining == 0 {
+                    return;
+                }
+                StopMode::AllTargets { remaining }
+            }
+            None => StopMode::All,
+        };
+
+        self.seed_start(terrain, &params, None, f64::INFINITY);
+        self.expand(
+            terrain,
+            &params,
+            f64::INFINITY,
+            stop as StopMode<'_, fn(Point) -> bool>,
         );
+    }
+
+    /// Targeted Dijkstra that halts as soon as all targets within `tie_margin` of the cheapest
+    /// reachable target have been settled (exact optimum for cost-ordered candidate selection).
+    pub(crate) fn run_dijkstra_until_best_target(
+        &mut self,
+        terrain: Terrain<'_>,
+        params: &SearchParams<'_>,
+        targets: &[Point],
+        tie_margin: f64,
+        max_cost: f64,
+    ) {
+        self.reset(
+            terrain.cache.width,
+            terrain.cache.height,
+            params.start,
+            params.revealed,
+        );
+        if self.mark_targets(terrain, targets) == 0 {
+            return;
+        }
+        self.seed_start(terrain, params, None, max_cost);
+        self.expand(
+            terrain,
+            params,
+            max_cost,
+            StopMode::BestTarget {
+                tie_margin,
+                best_cost: f64::INFINITY,
+            } as StopMode<'_, fn(Point) -> bool>,
+        );
+    }
+
+    /// Bounded Dijkstra that stops immediately upon popping the cheapest cell matching `predicate`.
+    pub(crate) fn run_dijkstra_first_matching<F: FnMut(Point) -> bool>(
+        &mut self,
+        terrain: Terrain<'_>,
+        params: &SearchParams<'_>,
+        max_cost: f64,
+        predicate: F,
+    ) -> Option<Point> {
+        self.reset(
+            terrain.cache.width,
+            terrain.cache.height,
+            params.start,
+            params.revealed,
+        );
+        self.seed_start(terrain, params, None, max_cost);
+        let mut found = None;
+        self.expand(
+            terrain,
+            params,
+            max_cost,
+            StopMode::FirstMatching {
+                predicate,
+                found: &mut found,
+            },
+        );
+        found
     }
 
     /// Single-goal A* using an admissible, consistent Euclidean-distance heuristic.
@@ -195,38 +294,35 @@ impl SearchScratch {
             return;
         }
         let goal_center = center(width, goal_index);
-        self.seed_start(
-            terrain,
+        let params = SearchParams {
             start,
             threats,
             preference,
             revealed,
-            Some(goal_center),
-        );
+        };
+        self.seed_start(terrain, &params, Some(goal_center), f64::INFINITY);
         self.expand(
             terrain,
-            threats,
-            preference,
-            revealed,
-            false,
-            0,
-            Some((goal_index, goal_center)),
+            &params,
+            f64::INFINITY,
+            StopMode::AStar {
+                goal_index,
+                goal_center,
+            } as StopMode<'_, fn(Point) -> bool>,
         );
     }
 
     fn seed_start(
         &mut self,
         terrain: Terrain<'_>,
-        start: Point,
-        threats: &[Point],
-        preference: RoutePreference,
-        revealed: bool,
+        params: &SearchParams<'_>,
         heuristic_goal: Option<Point>,
+        max_cost: f64,
     ) {
         let width = terrain.cache.width;
         let height = terrain.cache.height;
-        let sx = start.x.floor() as i32;
-        let sy = start.y.floor() as i32;
+        let sx = params.start.x.floor() as i32;
+        let sy = params.start.y.floor() as i32;
         for y in (sy - 1)..=(sy + 1) {
             for x in (sx - 1)..=(sx + 1) {
                 if x < 0 || y < 0 || x >= width as i32 || y >= height as i32 {
@@ -237,9 +333,19 @@ impl SearchScratch {
                     continue;
                 }
                 let point = center(width, index);
-                if let Some(time) = map::travel_time_t(terrain, start, point) {
-                    let cost =
-                        weighted_t(terrain, start, point, time, threats, preference, revealed);
+                if let Some(time) = map::travel_time_t(terrain, params.start, point) {
+                    let cost = weighted_t(
+                        terrain,
+                        params.start,
+                        point,
+                        time,
+                        params.threats,
+                        params.preference,
+                        params.revealed,
+                    );
+                    if cost > max_cost {
+                        continue;
+                    }
                     let h = heuristic_goal.map_or(0.0, |g| point.distance(g) / MAX_SPEED);
                     self.set_cost(index, cost, index);
                     self.queue.push(Entry {
@@ -252,41 +358,75 @@ impl SearchScratch {
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn expand(
+    fn expand<F: FnMut(Point) -> bool>(
         &mut self,
         terrain: Terrain<'_>,
-        threats: &[Point],
-        preference: RoutePreference,
-        revealed: bool,
-        has_targets: bool,
-        mut remaining_targets: usize,
-        astar_goal: Option<(usize, Point)>,
+        params: &SearchParams<'_>,
+        max_cost: f64,
+        mut stop: StopMode<'_, F>,
     ) {
         let width = self.width;
         let risk_width = self.risk_width;
         let gen = self.gen;
-        let use_risk = preference == RoutePreference::Protected && !threats.is_empty();
+        let use_risk =
+            params.preference == RoutePreference::Protected && !params.threats.is_empty();
         let dir_offsets = terrain.cache.dir_offsets;
 
         while let Some(Entry { cost, index, .. }) = self.queue.pop() {
             if cost > self.cost_at(index) {
                 continue;
             }
-            if let Some((goal_index, _)) = astar_goal {
-                if index == goal_index {
-                    break;
-                }
+            if cost > max_cost {
+                break;
             }
-            if has_targets && self.target_gen[index] == gen {
-                self.target_gen[index] = 0;
-                remaining_targets -= 1;
-                if remaining_targets == 0 {
-                    break;
+            let from = center(width, index);
+            match &mut stop {
+                StopMode::All => {}
+                StopMode::AStar { goal_index, .. } => {
+                    if index == *goal_index {
+                        break;
+                    }
+                }
+                StopMode::AllTargets { remaining } => {
+                    if self.target_gen[index] == gen {
+                        self.target_gen[index] = 0;
+                        *remaining -= 1;
+                        if *remaining == 0 {
+                            break;
+                        }
+                    }
+                }
+                StopMode::BestTarget {
+                    tie_margin,
+                    best_cost,
+                } => {
+                    if cost > *best_cost + *tie_margin {
+                        break;
+                    }
+                    if self.target_gen[index] == gen {
+                        *best_cost = best_cost.min(cost);
+                    }
+                }
+                StopMode::FirstMatching { predicate, found } => {
+                    if predicate(from) {
+                        **found = Some(from);
+                        break;
+                    }
                 }
             }
 
-            let from = center(width, index);
+            let astar_goal = match &stop {
+                StopMode::AStar { goal_center, .. } => Some(*goal_center),
+                _ => None,
+            };
+            let effective_cap = match &stop {
+                StopMode::BestTarget {
+                    tie_margin,
+                    best_cost,
+                } if best_cost.is_finite() => max_cost.min(*best_cost + *tie_margin),
+                _ => max_cost,
+            };
+
             let times = terrain.cache.neighbor_times(index);
             for (dir, &time) in times.iter().enumerate() {
                 if !time.is_finite() {
@@ -294,7 +434,7 @@ impl SearchScratch {
                 }
                 let next = (index as isize + dir_offsets[dir]) as usize;
                 let existing = self.cost_at(next);
-                if cost + time + 1e-10 >= existing {
+                if cost + time + 1e-10 >= existing || cost + time > effective_cap {
                     continue;
                 }
                 let to = center(width, next);
@@ -312,7 +452,7 @@ impl SearchScratch {
                         let value = if self.risk_gen[key] == gen {
                             self.risk_cache[key]
                         } else {
-                            let v = exposure(terrain, p, threats, revealed);
+                            let v = exposure(terrain, p, params.threats, params.revealed);
                             self.risk_gen[key] = gen;
                             self.risk_cache[key] = v;
                             v
@@ -327,9 +467,9 @@ impl SearchScratch {
                     time
                 };
                 let candidate = cost + edge_cost;
-                if candidate + 1e-10 < existing {
+                if candidate <= effective_cap && candidate + 1e-10 < existing {
                     self.set_cost(next, candidate, index);
-                    let h = astar_goal.map_or(0.0, |(_, g)| to.distance(g) / MAX_SPEED);
+                    let h = astar_goal.map_or(0.0, |g| to.distance(g) / MAX_SPEED);
                     self.queue.push(Entry {
                         priority: candidate + h,
                         cost: candidate,
@@ -573,12 +713,11 @@ impl Route {
         scratch: &mut SearchScratch,
         req: RouteRequest<'_>,
     ) {
-        let same_threat = self.threats.len() == req.threats.len()
-            && self
-                .threats
-                .iter()
-                .zip(req.threats)
-                .all(|(a, b)| a.distance(*b) < 2.0);
+        let same_threat =
+            self.threats.len() == req.threats.len()
+                && self.threats.iter().zip(req.threats).all(|(a, b)| {
+                    a.distance(*b) < crate::definitions::TUNING.threat_moved_distance
+                });
         if self.goal == Some(req.goal)
             && same_threat
             && self.preference == Some(req.preference)

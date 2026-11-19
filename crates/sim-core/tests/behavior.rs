@@ -57,6 +57,19 @@ fn run(b: &mut Battle, n: usize) {
         b.step();
     }
 }
+fn run_until(
+    b: &mut Battle,
+    max_steps: usize,
+    mut predicate: impl FnMut(&Snapshot) -> bool,
+) -> bool {
+    for _ in 0..max_steps {
+        b.step();
+        if predicate(&b.snapshot()) {
+            return true;
+        }
+    }
+    false
+}
 #[test]
 fn placement_validation_and_empty_setup() {
     let mut s = scenario(p(2.5, 2.5), p(2.5, 2.5));
@@ -100,10 +113,21 @@ fn doctrine_changes_firing_position() {
     short.units[0].doctrine.engagement_distance = 3.0;
     let mut a = Battle::new(long).unwrap();
     let mut b = Battle::new(short).unwrap();
-    run(&mut a, 60);
-    run(&mut b, 60);
-    assert!(b.snapshot().units[0].position.x > a.snapshot().units[0].position.x + 1.0);
-    assert!(a.snapshot().units[0].shots_fired > 0);
+    let first_shot_x = |battle: &mut Battle| -> Option<f64> {
+        let mut x = None;
+        run_until(battle, 200, |snap| {
+            if snap.units[0].shots_fired > 0 {
+                x = Some(snap.units[0].position.x);
+                true
+            } else {
+                false
+            }
+        });
+        x
+    };
+    let long_x = first_shot_x(&mut a).expect("long-range unit fires within 200 ticks");
+    let short_x = first_shot_x(&mut b).expect("short-range unit fires within 200 ticks");
+    assert!(short_x > long_x + 1.0, "short_x={short_x} long_x={long_x}");
 }
 #[test]
 fn same_seed_repeats_and_timeout_is_reported() {
@@ -145,9 +169,9 @@ fn low_hp_doctrine_causes_fallback() {
     let mut s = scenario(p(8.5, 10.5), p(12.5, 10.5));
     s.units[0].doctrine.fallback_hp = 100.0;
     let mut b = Battle::new(s).unwrap();
-    run(&mut b, 10);
-    assert_eq!(b.snapshot().units[0].behavior, Behavior::FallingBack);
-    assert!(b.snapshot().units[0].position.x < 8.5);
+    assert!(run_until(&mut b, 30, |snap| {
+        snap.units[0].behavior == Behavior::FallingBack && snap.units[0].position.x < 8.5
+    }));
 }
 #[test]
 fn patrol_routes_around_wall_without_crossing_it() {
@@ -155,18 +179,18 @@ fn patrol_routes_around_wall_without_crossing_it() {
     s.map.obstacles = (1..7).map(|y| obstacle(5, y, 2.4)).collect();
     s.map.patrol = vec![p(8.5, 4.5)];
     let mut b = Battle::new(s).unwrap();
-    for _ in 0..180 {
-        b.step();
-        let q = b.snapshot().units[0].position;
+    let cleared_wall = run_until(&mut b, 240, |snap| {
+        let q = snap.units[0].position;
         for y in 1..7 {
             let cx = q.x.clamp(5.0, 6.0);
             let cy = q.y.clamp(y as f64, y as f64 + 1.0);
             assert!((q.x - cx).powi(2) + (q.y - cy).powi(2) >= 0.25_f64.powi(2) - 1e-9);
         }
-    }
+        q.x > 6.25
+    });
     assert!(
-        b.snapshot().units[0].position.x > 6.25,
-        "{:?}",
+        cleared_wall,
+        "unit did not clear wall within 240 ticks: {:?}",
         b.snapshot().units[0].position
     );
 }
@@ -184,9 +208,14 @@ fn fallback_uses_safer_cover_before_an_ally() {
     });
     let mut b = Battle::new(s).unwrap();
     // A solid obstacle requires routing around its footprint before reaching protection.
-    run(&mut b, 50);
-    let q = b.snapshot().units[0].position;
-    assert!(q.x < 8.5 && q.y < 10.5, "fallback position: {q:?}");
+    assert!(
+        run_until(&mut b, 80, |snap| {
+            let q = snap.units[0].position;
+            q.x < 8.5 && q.y < 10.5
+        }),
+        "fallback position: {:?}",
+        b.snapshot().units[0].position
+    );
 }
 #[test]
 fn no_known_threat_means_low_hp_unit_defends() {
@@ -209,7 +238,7 @@ fn malformed_terrain_is_rejected_without_panicking() {
 #[test]
 fn combat_reports_elimination_and_casualties() {
     let mut b = Battle::new(scenario(p(3.5, 3.5), p(7.5, 3.5))).unwrap();
-    run(&mut b, 1000);
+    assert!(run_until(&mut b, 1000, |snap| snap.result.is_some()));
     let result = b.snapshot().result.unwrap();
     assert_eq!(result.reason, "elimination");
     assert!(result.winner.is_some());
@@ -236,9 +265,10 @@ fn fallback_moves_toward_safer_ally_when_no_cover() {
         doctrine: catalog().default_doctrine,
     });
     let mut b = Battle::new(s).unwrap();
-    run(&mut b, 5);
-    let q = b.snapshot().units[0].position;
-    assert!(q.x < 8.5 && q.y > 10.5);
+    assert!(run_until(&mut b, 30, |snap| {
+        let q = snap.units[0].position;
+        q.x < 8.5 && q.y > 10.5
+    }));
 }
 #[test]
 fn fallback_holds_when_no_safer_position_exists() {
@@ -256,8 +286,7 @@ fn engagement_moves_to_nearby_cover() {
     s.units[0].doctrine.position_preference = PositionPreference::Cover;
     s.map.obstacles.push(obstacle(9, 8, 0.9));
     let mut b = Battle::new(s).unwrap();
-    run(&mut b, 10);
-    assert!(b.snapshot().units[0].position.y < 10.5);
+    assert!(run_until(&mut b, 40, |snap| snap.units[0].position.y < 10.5));
 }
 #[test]
 fn fallback_skips_unreachable_cover_for_safer_ally() {
@@ -277,9 +306,10 @@ fn fallback_skips_unreachable_cover_for_safer_ally() {
         doctrine: catalog().default_doctrine,
     });
     let mut b = Battle::new(s).unwrap();
-    run(&mut b, 5);
-    let q = b.snapshot().units[0].position;
-    assert!(q.x < 8.5 && q.y > 10.5);
+    assert!(run_until(&mut b, 30, |snap| {
+        let q = snap.units[0].position;
+        q.x < 8.5 && q.y > 10.5
+    }));
 }
 
 #[test]
@@ -288,10 +318,11 @@ fn fallback_finds_an_alternative_when_direct_retreat_is_blocked() {
     s.units[0].doctrine.fallback_hp = 100.0;
     s.map.obstacles.push(obstacle(4, 10, 2.4));
     let mut b = Battle::new(s).unwrap();
-    run(&mut b, 5);
-    let unit = &b.snapshot().units[0];
-    assert_eq!(unit.behavior, Behavior::FallingBack);
-    assert!((unit.position.x - 8.5).abs() + (unit.position.y - 10.5).abs() > 0.1);
+    assert!(run_until(&mut b, 30, |snap| {
+        let unit = &snap.units[0];
+        unit.behavior == Behavior::FallingBack
+            && (unit.position.x - 8.5).abs() + (unit.position.y - 10.5).abs() > 0.1
+    }));
 }
 
 #[test]

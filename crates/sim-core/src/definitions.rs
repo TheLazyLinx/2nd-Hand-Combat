@@ -9,6 +9,62 @@ pub(crate) const COOLDOWN: f64 = 1.0;
 pub(crate) const REVEAL_TICKS: u32 = 40;
 pub(crate) const LOW_OBSTACLE_HEIGHT: f64 = 0.9;
 pub(crate) const FULL_OBSTACLE_HEIGHT: f64 = 2.4;
+
+/// Centralized simulation tuning constants for decision cadence, tactical radii, sustainment,
+/// and consumables. Keeps gameplay parameters in one place rather than scattered literals.
+pub(crate) struct Tuning {
+    pub decision_interval_ticks: u32,
+    pub memory_expiry_ticks: u32,
+    pub threat_moved_distance: f64,
+    pub score_tolerance: f64,
+    pub advance_arrive_distance: f64,
+    pub fallback_arrive_distance: f64,
+    pub fallback_distance_margin: f64,
+    pub patrol_arrive_distance: f64,
+    pub reposition_radius: f64,
+    pub fallback_radius: f64,
+    pub spotting_range: f64,
+    pub investigate_max_radius: f64,
+    pub investigate_max_cost: f64,
+    pub nutrition_drain_per_second: f64,
+    pub hydration_drain_per_second: f64,
+    pub shortage_threshold: f64,
+    pub nutrition_shortage_penalty: f64,
+    pub hydration_shortage_penalty: f64,
+    pub blast_radius: f64,
+    pub grenade_damage: f64,
+    pub grenade_cooldown_seconds: f64,
+    pub medical_heal: f64,
+    pub need_use_threshold: f64,
+    pub need_restore: f64,
+}
+
+pub(crate) const TUNING: Tuning = Tuning {
+    decision_interval_ticks: 10,
+    memory_expiry_ticks: 200,
+    threat_moved_distance: 2.0,
+    score_tolerance: 0.01,
+    advance_arrive_distance: 0.2,
+    fallback_arrive_distance: 0.3,
+    fallback_distance_margin: 0.25,
+    patrol_arrive_distance: 0.4,
+    reposition_radius: 3.0,
+    fallback_radius: 5.0,
+    spotting_range: 14.0,
+    investigate_max_radius: 24.0,
+    investigate_max_cost: 40.0,
+    nutrition_drain_per_second: 0.5,
+    hydration_drain_per_second: 1.0,
+    shortage_threshold: 25.0,
+    nutrition_shortage_penalty: 0.15,
+    hydration_shortage_penalty: 0.25,
+    blast_radius: 1.5,
+    grenade_damage: 40.0,
+    grenade_cooldown_seconds: 3.0,
+    medical_heal: 25.0,
+    need_use_threshold: 50.0,
+    need_restore: 40.0,
+};
 pub fn surface_definition(id: Surface) -> &'static SurfaceDefinition {
     static DEFS: std::sync::OnceLock<Vec<SurfaceDefinition>> = std::sync::OnceLock::new();
     let defs = DEFS.get_or_init(|| {

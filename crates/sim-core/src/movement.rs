@@ -55,7 +55,9 @@ pub(crate) fn execute_with(
                 u.position,
                 crate::definitions::STEP * u.inventory.load_factor() * u.needs_factor(),
             );
-            if u.behavior == Behavior::Investigating && u.position.distance(goal) < 0.2 {
+            if u.behavior == Behavior::Investigating
+                && u.position.distance(goal) < crate::definitions::TUNING.advance_arrive_distance
+            {
                 if let Some(memory) = &mut u.memory {
                     memory.investigated = true;
                 }

@@ -1,5 +1,6 @@
 use crate::{
     decisions,
+    definitions::TUNING,
     navigation::SearchScratch,
     perception,
     terrain::TerrainCache,
@@ -218,7 +219,7 @@ impl Battle {
                 .map(|&j| (self.units[j].placement.id, self.units[j].position));
             let me = &mut self.units[i];
             me.threat_memories
-                .retain(|memory| self.tick - memory.tick <= 200);
+                .retain(|memory| self.tick - memory.tick <= TUNING.memory_expiry_ticks);
             for &(id, position) in &contacts {
                 if let Some(memory) = me.threat_memories.iter_mut().find(|memory| memory.id == id) {
                     memory.position = position;
@@ -250,7 +251,11 @@ impl Battle {
                 if previous_target.is_some() {
                     me.needs_decision = true;
                 }
-                if me.memory.as_ref().is_some_and(|m| self.tick - m.tick > 200) {
+                if me
+                    .memory
+                    .as_ref()
+                    .is_some_and(|m| self.tick - m.tick > TUNING.memory_expiry_ticks)
+                {
                     me.memory = None;
                 }
             }
@@ -258,7 +263,9 @@ impl Battle {
         timer.mark_perception();
         let mut decisions = Vec::with_capacity(self.units.len());
         for i in 0..self.units.len() {
-            if self.units[i].hp <= 0.0 || (self.tick % 10 != 1 && !self.units[i].needs_decision) {
+            let cadence_due = (self.tick + self.units[i].placement.id)
+                .is_multiple_of(TUNING.decision_interval_ticks);
+            if self.units[i].hp <= 0.0 || (!cadence_due && !self.units[i].needs_decision) {
                 decisions.push(None);
                 continue;
             }
@@ -307,6 +314,11 @@ impl Battle {
                 u.patrol_index = decision.patrol_index;
                 if let Some(route) = decision.route {
                     u.route = route;
+                }
+                if decision.mark_investigated {
+                    if let Some(memory) = &mut u.memory {
+                        memory.investigated = true;
+                    }
                 }
                 u.needs_decision = false;
                 u.fallback_threat = if fallback.is_some() && fallback == old_fallback {
@@ -619,5 +631,25 @@ mod tests {
             battle.step();
         }
         assert_eq!(battle.snapshot(), terminal);
+    }
+    #[test]
+    fn unreachable_memory_returns_unit_to_patrol_in_battle() {
+        let mut battle = test_battle();
+        battle.scenario.map.obstacles.push(Obstacle {
+            x: 15,
+            y: 0,
+            width: 1,
+            height: 20,
+            height_metres: 2.5,
+        });
+        battle.units[0].memory = Some(Memory {
+            position: Point { x: 20.5, y: 10.5 },
+            tick: 0,
+            investigated: false,
+        });
+        battle.step();
+        assert!(battle.units[0].memory.as_ref().unwrap().investigated);
+        assert_eq!(battle.snapshot().units[0].behavior, Behavior::Searching);
+        assert!(battle.snapshot().units[0].position.x > 2.5);
     }
 }

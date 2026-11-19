@@ -1,6 +1,6 @@
 # Improvement Plan
 
-Status: in progress (updated 19 November 2026 against `main` `0acc5c8`). Phase 0 (0A–0D) and Phase 1 are complete; Phase 2 is next. Approved decisions are recorded in [docs/decisions/](docs/decisions/README.md) and summarized in [Decisions](#decisions) at the end.
+Status: in progress (updated 19 November 2026 against `main` `0acc5c8`). Phase 0 (0A–0D), Phase 1, and Phase 2 are complete; Phase 3 is next. Approved decisions are recorded in [docs/decisions/](docs/decisions/README.md) and summarized in [Decisions](#decisions) at the end.
 
 This file is the single tracker for this work. Agents check off items in the same change that completes them.
 
@@ -155,17 +155,32 @@ Deferred until measured: hierarchical pathfinding, flow fields, map chunking.
 
 ## Phase 2 — Decision and doctrine architecture
 
-Restructure decisions before adding more doctrine rules so the engine scales to presets, triggers, fire-on-the-move, grenades, medical care, and future equipment.
+Restructured decisions and item actions into modular candidate-proposal pipelines with centralized tuning, bounded scans/searches, and deterministic staggering.
 
-- [ ] **Candidate-action doctrine structure:** refactor `decisions.rs` and `item_actions.rs` so behaviours and item actions propose typed candidate actions that doctrine filters and scores, instead of monolithic nested `if` chains. Keep movement/tactical intentions and per-tick item/combat actions cleanly separated from execution.
-- [ ] Split `decisions.rs` into per-behaviour modules: `decisions/{mod, fallback, engage, reposition, investigate, patrol}.rs`. Replace positional tuples like `(Point, f64, f64, f64, bool)` with named candidate structs and explicit comparators.
-- [ ] Introduce a **`Tuning`** struct in definitions for scattered magic numbers: decision interval (`10`), memory expiry (`200` ticks, currently duplicated), tolerances (`0.01`, `0.2`, `0.3`, `0.4`), threat-moved distance (`2.0`), reposition radius (`3.0`), fallback radius (`5.0`), sustainment drain/threshold/restore constants, and grenade/medical constants.
-- [ ] **Bound candidate scans** to a grid window around the unit instead of scanning the entire map. Bound the investigation search by radius or cost, checking cheap filters (cost, distance) before sight rays.
-- [ ] **Stagger decisions** deterministically by unit ID (e.g., `(tick + id) % interval`) so decision costs spread across ticks while keeping event-driven early interrupts. Any work budget must be count-based, never wall-clock-based.
-- [ ] Fix `Investigating` units standing still when both the remembered position and all observation spots are unreachable (empty route): mark investigated or fall back to patrol.
-- [ ] **Reduce test timing fragility:** migrate unit/integration tests that assert exact positions after fixed step counts (`run(&mut b, 35)`) to behavioural ("eventually reaches X within N steps") or multi-seed statistical assertions, while keeping full tick-by-tick reproducibility tests.
+- [x] **Candidate-action doctrine structure:** refactored `decisions` and [item_actions.rs](crates/sim-core/src/item_actions.rs) into typed proposals (`Decision` / `ActionProposal` + `ActionPriority`) filtered and scored by doctrine while staying cleanly separated from execution.
+- [x] Split `decisions.rs` into per-behaviour modules: [decisions/mod.rs](crates/sim-core/src/decisions/mod.rs), [fallback.rs](crates/sim-core/src/decisions/fallback.rs), [engage.rs](crates/sim-core/src/decisions/engage.rs), [reposition.rs](crates/sim-core/src/decisions/reposition.rs), [investigate.rs](crates/sim-core/src/decisions/investigate.rs), and [patrol.rs](crates/sim-core/src/decisions/patrol.rs). Replaced positional tuples with named candidate structs (`FallbackCandidate`, `ApproachCandidate`, `PositionCandidate`) and explicit `is_better_than` comparators.
+- [x] Introduced **`TUNING: Tuning`** in [definitions.rs](crates/sim-core/src/definitions.rs) centralizing decision cadence (`10`), memory expiry (`200` ticks), tolerances (`0.01`, `0.2`, `0.3`, `0.25`, `0.4`), threat-moved distance (`2.0`), reposition/fallback/investigation radii (`3.0`, `5.0`, `24.0`), investigation cost cap (`40.0`), sustainment rates/penalties, and consumable constants.
+- [x] **Bounded candidate scans and searches:** added `grid_window` for local cell scans in fallback, engage, and reposition; added `SearchScratch::run_dijkstra_until_best_target` (optimal early cutoff for blocked approach) and `SearchScratch::run_dijkstra_first_matching` (bounded cost/radius investigation with distance filters before sight rays).
+- [x] **Staggered decisions** deterministically by unit ID (`(tick + id) % 10 == 0`) in [battle.rs](crates/sim-core/src/battle.rs) while preserving tick-1 initialization and immediate `needs_decision` interrupts. Updated [crates/sim-bench/fingerprints.json](crates/sim-bench/fingerprints.json) with human approval after verifying all 6 statistical cross-seed doctrine tests pass.
+- [x] Fixed `Investigating` units standing still when both the remembered position and observation spots are unreachable (`Decision::mark_investigated` marks memory investigated and falls back to patrol, covered by unit tests).
+- [x] **Reduced test timing fragility:** migrated fixed-step-count tests in [behavior.rs](crates/sim-core/tests/behavior.rs) to `run_until` behavioural assertions while keeping tick-by-tick reproducibility tests intact.
 
-Note: staggering and A* tie-breaks change exact trajectories; update outcome fingerprints with a documented explanation in the handoff.
+#### Phase 2 benchmark results (`npm run bench:rust`, native release, 8 v 8, Cover doctrine)
+
+Every scenario now beats all [ADR 0001](docs/decisions/0001-performance-targets.md) native release proxy targets (`mean ≤ 2.5 ms`, `p99 ≤ 10 ms`, `worst ≤ 20 ms`, `0` steps `> 50 ms`):
+
+| Scenario | Mean (Base → Ph1 → Ph2) | p99 (Base → Ph1 → Ph2) | Worst (Base → Ph1 → Ph2) |
+| --- | ---: | ---: | ---: |
+| `training-fastest` | 0.543 → 0.140 → 0.165 ms | 11.99 → 0.97 → 0.63 ms | 31.16 → 1.44 → 0.79 ms |
+| `training-protected` | 4.203 → 1.214 → 0.407 ms | 42.36 → 9.44 → 2.72 ms | 59.40 → 10.85 → 5.60 ms |
+| `ridge-fastest` | 0.252 → 0.264 → 0.089 ms | 4.76 → 2.48 → 1.00 ms | 28.86 → 3.42 → 2.40 ms |
+| `ridge-protected` | 1.532 → 0.888 → 0.478 ms | 21.21 → 9.50 → 5.65 ms | 32.82 → 18.68 → 10.13 ms |
+| `woodland-fastest` | 0.585 → 0.180 → 0.182 ms | 8.42 → 1.86 → 1.05 ms | 20.59 → 2.32 → 2.60 ms |
+| `woodland-protected` | 0.269 → 0.473 → 0.410 ms | 6.31 → 6.24 → 4.45 ms | 29.12 → 17.53 → 8.71 ms |
+| `128x128-open-fastest` | 0.318 → 0.036 → 0.035 ms | 2.91 → 0.33 → 0.23 ms | 381.68 → 8.59 → 9.25 ms |
+| `128x128-open-protected` | 0.831 → 0.022 → 0.021 ms | 12.68 → 0.33 → 0.27 ms | 372.92 → 8.03 → 8.26 ms |
+| `128x128-obs1500-fastest` | 66.881 → 0.262 → 0.084 ms | — → 5.91 → 0.69 ms | 31,556.46 → 13.58 → 7.33 ms |
+| `128x128-obs1500-protected` | 68.070 → 0.572 → 0.381 ms | — → 17.13 → 1.47 ms | 32,315.66 → 42.58 → 7.36 ms |
 
 ---
 
