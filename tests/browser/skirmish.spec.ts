@@ -135,7 +135,7 @@ test(
       .getByTestId('faction-0')
       .getByRole('button', { name: /Infantry #1/ })
       .click();
-    await page.getByTestId('engagement-distance').fill('2');
+    await page.getByTestId('engagement-distance').fill('5');
     await page.getByTestId('start-battle').click();
     await expect
       .poll(
@@ -733,3 +733,89 @@ test(
     expect(Math.max(...gaps)).toBeLessThan(750);
   },
 );
+
+test('toggling fire while moving changes shots fired while advancing in real WASM', async ({
+  page,
+}) => {
+  await openSkirmish(page);
+  await place(page, 0, 2.5, 2.5);
+  await page.getByTestId('engagement-distance').fill('2');
+  await expect(page.getByTestId('fire-while-moving')).not.toBeChecked();
+  await place(page, 1, 12.5, 2.5);
+  await page.getByTestId('start-battle').click();
+  await expect
+    .poll(async () => (await latestSnapshot(page))?.tick ?? 0, { timeout: 10_000 })
+    .toBeGreaterThanOrEqual(25);
+  const offShotsWhileAdvancing = await page.evaluate(() => {
+    const snaps = window.observedWorkers
+      .at(-1)!
+      .received.filter((m) => m.type === 'snapshot' && m.battleId === 1)
+      .map((m) => (m.type === 'snapshot' ? m.snapshot : null))
+      .filter((s): s is NonNullable<typeof s> => s !== null);
+    const lastAdvancing = snaps.findLast((s) => s.units[0].behavior === 'Advancing');
+    return lastAdvancing?.units[0].shotsFired ?? 0;
+  });
+  expect(offShotsWhileAdvancing).toBe(0);
+
+  await page.getByTestId('reset-battle').click();
+  await page
+    .getByTestId('faction-0')
+    .getByRole('button', { name: /Infantry #1/ })
+    .click();
+  await page.getByTestId('fire-while-moving').check();
+  await expect(page.getByTestId('fire-while-moving')).toBeChecked();
+  await page.getByTestId('start-battle').click();
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() =>
+          window.observedWorkers
+            .at(-1)!
+            .received.some(
+              (m) =>
+                m.type === 'snapshot' &&
+                m.battleId === 3 &&
+                m.snapshot.units[0].behavior === 'Advancing' &&
+                m.snapshot.units[0].shotsFired > 0,
+            ),
+        ),
+      { timeout: 10_000 },
+    )
+    .toBe(true);
+});
+
+test('time limit defaults to 10 minutes, supports no time limit, and End battle reports stopped draw', async ({
+  page,
+}) => {
+  await openSkirmish(page);
+  await expect(page.getByTestId('time-limit-minutes')).toHaveValue('10');
+  await expect(page.getByTestId('no-time-limit')).not.toBeChecked();
+  await expect(page.getByTestId('battle-clock')).toContainText('10:00');
+
+  await page.getByTestId('no-time-limit').check();
+  await expect(page.getByTestId('time-limit-minutes')).toBeDisabled();
+  await expect(page.getByTestId('battle-clock')).toContainText('NO LIMIT');
+
+  await place(page, 0, 2.5, 2.5);
+  await place(page, 1, 29.5, 17.5);
+  await page.getByTestId('start-battle').click();
+  await expect(page.getByTestId('battle-status')).toHaveText('RUNNING');
+  const startScenario = await page.evaluate(() => {
+    const msg = window.observedWorkers.at(-1)!.sent.find((m) => m.type === 'start');
+    return msg?.type === 'start' ? msg.scenario : null;
+  });
+  expect(startScenario?.timeLimit).toBeNull();
+
+  await expect.poll(async () => (await latestSnapshot(page))?.tick ?? 0).toBeGreaterThan(2);
+  await page.getByTestId('pause-battle').click();
+  await expect(page.getByTestId('battle-status')).toHaveText('PAUSED');
+  await page.getByTestId('end-battle').click();
+  await expect(page.getByTestId('battle-status')).toHaveText('FINISHED');
+  await expect(page.getByText('AFTER ACTION REPORT')).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Draw', exact: true })).toBeVisible();
+  await expect(page.getByText(/Battle ended early/)).toBeVisible();
+  await expect(page.getByText(/1 survivors \/ 0 casualties/).first()).toBeVisible();
+  await page.getByTestId('reset-battle').click();
+  await expect(page.getByTestId('battle-status')).toHaveText('SETUP');
+  await expect(page.getByTestId('no-time-limit')).toBeChecked();
+});

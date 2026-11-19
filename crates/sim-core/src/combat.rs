@@ -99,6 +99,7 @@ pub(crate) fn execute_with_context<T: StepTimer>(
                 entry_id,
                 target_idx,
                 exposure,
+                moving_multiplier,
                 weapon,
             }) => {
                 units[i]
@@ -118,7 +119,7 @@ pub(crate) fn execute_with_context<T: StepTimer>(
                 *rng ^= *rng >> 7;
                 *rng ^= *rng << 17;
                 let roll = (*rng >> 11) as f64 / ((1_u64 << 53) as f64);
-                if roll < weapon.hit_chance * exposure {
+                if roll < weapon.hit_chance * exposure * moving_multiplier {
                     damage[target_idx] += weapon.damage;
                 }
             }
@@ -400,5 +401,52 @@ mod tests {
         assert_eq!((units[0].vitals.hp, units[1].vitals.hp), (0.0, 0.0));
         assert_eq!(units[0].inventory.count("frag-grenade"), 1);
         assert_eq!(units[1].combat.shots, 1);
+    }
+    #[test]
+    fn moving_behaviors_require_fire_while_moving_for_rifle_and_grenades() {
+        let map = ArenaMap::flat(16, 6);
+        for behavior in [
+            Behavior::Advancing,
+            Behavior::FallingBack,
+            Behavior::Investigating,
+        ] {
+            // Default off: neither rifle nor grenade attacks while moving.
+            let mut off = vec![soldier(1, 2.5), soldier(2, 6.5)];
+            off[0].combat.behavior = behavior.clone();
+            off[0].placement.doctrine.fire_while_moving = false;
+            off[0].placement.doctrine.grenades.policy = GrenadePolicy::AnySafeTarget;
+            off[1].combat.set_attack_cooldown(10);
+            execute(&mut off, &map, &mut 2, 1);
+            assert_eq!(off[0].combat.shots, 0, "{behavior:?} off should not fire");
+            assert_eq!(
+                off[0].inventory.count("frag-grenade"),
+                2,
+                "{behavior:?} off should not throw grenade"
+            );
+
+            // Enabled: throws grenade when policy matches, or fires rifle when grenades disabled.
+            let mut on_grenade = vec![soldier(1, 2.5), soldier(2, 6.5)];
+            on_grenade[0].combat.behavior = behavior.clone();
+            on_grenade[0].placement.doctrine.fire_while_moving = true;
+            on_grenade[0].placement.doctrine.grenades.policy = GrenadePolicy::AnySafeTarget;
+            on_grenade[1].combat.set_attack_cooldown(10);
+            execute(&mut on_grenade, &map, &mut 2, 1);
+            assert_eq!(
+                on_grenade[0].inventory.count("frag-grenade"),
+                1,
+                "{behavior:?} on should allow grenade"
+            );
+
+            let mut on_rifle = vec![soldier(1, 2.5), soldier(2, 6.5)];
+            on_rifle[0].combat.behavior = behavior.clone();
+            on_rifle[0].placement.doctrine.fire_while_moving = true;
+            on_rifle[0].placement.doctrine.grenades.policy = GrenadePolicy::Never;
+            on_rifle[1].combat.set_attack_cooldown(10);
+            execute(&mut on_rifle, &map, &mut 2, 1);
+            assert_eq!(
+                on_rifle[0].combat.shots, 1,
+                "{behavior:?} on should allow rifle fire"
+            );
+        }
     }
 }

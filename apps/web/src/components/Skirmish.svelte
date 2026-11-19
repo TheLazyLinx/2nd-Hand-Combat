@@ -51,12 +51,19 @@
   let inspectX = 0;
   let inspectY = 0;
   let terrainOverlay = true;
+  let lastNumericTimeLimit = 600;
 
   let host: HTMLElement;
   let client: BattleClient | null = null;
   let battlefield: Battlefield | null = null;
   let generation = 0;
   const copy = <T,>(value: T): T => structuredClone(value);
+  function formatClock(seconds: number): string {
+    const whole = Math.max(0, Math.round(seconds));
+    const mins = Math.floor(whole / 60);
+    const secs = whole % 60;
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  }
   $: selectedUnit = scenario?.units.find((unit) => unit.id === selected) ?? null;
   $: inspected =
     scenario &&
@@ -118,6 +125,7 @@
             loadouts: [],
             timeLimit: catalog.defaultTimeLimit,
           };
+      lastNumericTimeLimit = scenario.timeLimit ?? catalog.defaultTimeLimit;
       snapshot = null;
       result = null;
       selected = null;
@@ -245,6 +253,30 @@
     if (selectedUnit)
       editUnit(selectedUnit.id, { doctrine: { ...selectedUnit.doctrine, [field]: value } });
   }
+  function changeTimeLimitMinutes(input: HTMLInputElement) {
+    if (!scenario || !catalog || phase !== 'setup' || busy) return;
+    const minutes = Number(input.value);
+    const seconds = Math.round(minutes * 60);
+    if (input.value.trim() === '' || !Number.isFinite(minutes) || seconds < 1 || seconds > 3600) {
+      error = 'Time limit must be between 1 second and 60 minutes.';
+      input.value =
+        scenario.timeLimit === null ? '' : String(Number((scenario.timeLimit / 60).toFixed(2)));
+      return;
+    }
+    error = '';
+    lastNumericTimeLimit = seconds;
+    scenario = { ...scenario, timeLimit: seconds };
+  }
+  function toggleNoTimeLimit(unlimited: boolean) {
+    if (!scenario || !catalog || phase !== 'setup' || busy) return;
+    error = '';
+    if (unlimited) {
+      if (scenario.timeLimit !== null) lastNumericTimeLimit = scenario.timeLimit;
+      scenario = { ...scenario, timeLimit: null };
+    } else {
+      scenario = { ...scenario, timeLimit: lastNumericTimeLimit || catalog.defaultTimeLimit };
+    }
+  }
   async function changeMap(id: string) {
     if (!catalog || !scenario || !client || phase !== 'setup' || busy) return;
     const preset = catalog.maps.find((map) => map.id === id);
@@ -272,6 +304,7 @@
           return;
         }
         scenario = candidate;
+        lastNumericTimeLimit = candidate.timeLimit ?? catalog.defaultTimeLimit;
         mapId = id;
         description = entry.document.description;
       } catch (e) {
@@ -346,6 +379,11 @@
       phase = 'running';
     }
   }
+  function endBattle() {
+    if (phase === 'running' || phase === 'paused') {
+      client?.stop();
+    }
+  }
   onMount(() => {
     const visibility = () => {
       if (document.hidden) pause();
@@ -401,10 +439,12 @@
       </div>
       <div class="map-frame">
         <div class="map-top">
-          <span>TACTICAL MAP</span><span>
+          <span>TACTICAL MAP</span><span data-testid="battle-clock">
             {phase === 'setup' ? 'DEPLOYMENT' : 'LIVE VIEW'} / {snapshot
               ? `${snapshot.elapsed.toFixed(1)}s`
-              : '00:00'}
+              : '00:00'} / {scenario?.timeLimit === null
+              ? 'NO LIMIT'
+              : formatClock(scenario?.timeLimit ?? catalog?.defaultTimeLimit ?? 600)}
           </span>
         </div>
         <div
@@ -460,6 +500,28 @@
           <span>{description}</span><small>
             Selecting a map or scenario replaces the current setup.
           </small>
+          <label>
+            Time limit (min) <input
+              data-testid="time-limit-minutes"
+              type="number"
+              min="0.05"
+              max="60"
+              step="any"
+              disabled={phase !== 'setup' || busy || scenario.timeLimit === null}
+              value={scenario.timeLimit === null
+                ? ''
+                : Number((scenario.timeLimit / 60).toFixed(2))}
+              onchange={(e) => changeTimeLimitMinutes(e.currentTarget)}
+            />
+          </label><label>
+            <input
+              data-testid="no-time-limit"
+              type="checkbox"
+              disabled={phase !== 'setup' || busy}
+              checked={scenario.timeLimit === null}
+              onchange={(e) => toggleNoTimeLimit(e.currentTarget.checked)}
+            /> No time limit
+          </label>
           <label>
             <input type="checkbox" bind:checked={terrainOverlay} /> Terrain grid and elevation shading
           </label>
@@ -563,6 +625,11 @@
               onclick={resume}
             >
               Resume battle
+            </button>{/if}{#if phase === 'running' || phase === 'paused'}<button
+              data-testid="end-battle"
+              onclick={endBattle}
+            >
+              End battle
             </button>{/if}{#if starting && phase !== 'setup'}<button
               data-testid="reset-battle"
               onclick={reset}

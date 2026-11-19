@@ -473,17 +473,20 @@ test('inventory doctrines round trip through v3 export and the scenario library'
   await page.getByTestId('medical-policy').selectOption('outOfContact');
   await expect(page.getByTestId('medical-safe')).toHaveValue('7');
   await page.getByTestId('ammo-behavior').selectOption('continueDoctrine');
+  await page.getByTestId('fire-while-moving').check();
+  await page.getByTestId('maker-no-time-limit').check();
   // Keep the last numeric input focused: exporting must not lose the click to blur validation.
   await page.getByTestId('medical-cooldown').fill('12');
   await expect(page.getByText('Ready to test', { exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Export', exact: true })).toBeEnabled();
   const document = await exported(page, info.outputPath('inventory-doctrine-v3.json'));
   expect(document.schemaVersion).toBe(3);
+  expect(document.scenario.timeLimit).toBeNull();
   expect(document.scenario.units[0].doctrine).toMatchObject({
     grenades: { policy: 'clusters', maxDistance: 5.5, minEnemies: 3, safetyMargin: 0.75 },
     medical: { policy: 'outOfContact', hpThreshold: 65, safeSeconds: 7, cooldownSeconds: 12 },
     outOfAmmoBehavior: 'continueDoctrine',
-    fireWhileMoving: false,
+    fireWhileMoving: true,
   });
   expect(document.scenario.units[0]).not.toHaveProperty('inventory');
   await page.getByRole('button', { name: 'Save', exact: true }).first().click();

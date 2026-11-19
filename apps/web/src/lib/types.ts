@@ -24,7 +24,7 @@ export type WorkerCommand =
   | { type: 'analyze'; requestId: number; revision: number; scenario: Scenario }
   | { type: 'validate'; requestId: number; scenario: Scenario; forStart: boolean }
   | { type: 'start'; battleId: number; scenario: Scenario }
-  | { type: 'pause' | 'resume' | 'reset'; battleId: number };
+  | { type: 'pause' | 'resume' | 'stop' | 'reset'; battleId: number };
 
 export type WorkerReply =
   | { type: 'ready'; catalog: Catalog }

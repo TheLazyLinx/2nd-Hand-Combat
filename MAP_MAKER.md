@@ -44,12 +44,12 @@ Portable JSON documents have this envelope:
     ],
     "loadouts": [],
     "units": [],
-    "timeLimit": 180
+    "timeLimit": 600
   }
 }
 ```
 
-This minimal draft has no soldiers and cannot start a battle. The map contains row-major surface cells and vertex elevations, obstacles, and ordered patrol points. Vertex rows have `width + 1` entries. Factions define stable IDs, display names, 24-bit RGB colours, and patrol directions. Scenarios may define named `loadouts` composed of game-wide catalog item IDs and quantities; each unit placement carries a stable ID, faction ID, unit `definitionId`, position, doctrine, and an optional `loadout` override (omitting `loadout` uses the unit type's `defaultLoadout`). `timeLimit` may be a numeric limit in seconds (1–3600) or `null` for unlimited battles. See [TERRAIN.md](TERRAIN.md) for terrain semantics. Export includes unfinished but structurally safe scenarios. Imports create new local records, never silently overwrite an existing one, and pass runtime format checks and Rust structural analysis before use. Unsupported versions and malformed files produce visible errors. Files are limited to 8 MiB. If storing an import fails, it remains open as an unsaved draft for export or testing.
+This minimal draft has no soldiers and cannot start a battle. The map contains row-major surface cells and vertex elevations, obstacles, and ordered patrol points. Vertex rows have `width + 1` entries. Factions define stable IDs, display names, 24-bit RGB colours, and patrol directions. Scenarios may define named `loadouts` composed of game-wide catalog item IDs and quantities; each unit placement carries a stable ID, faction ID, unit `definitionId`, position, doctrine, and an optional `loadout` override (omitting `loadout` uses the unit type's `defaultLoadout`). `timeLimit` defaults to 600 seconds (10 minutes), accepts numeric limits in seconds (1–3600), or `null` for unlimited battles (toggled via "No time limit"). See [TERRAIN.md](TERRAIN.md) for terrain semantics. Export includes unfinished but structurally safe scenarios. Imports create new local records, never silently overwrite an existing one, and pass runtime format checks and Rust structural analysis before use. Unsupported versions and malformed files produce visible errors. Files are limited to 8 MiB. If storing an import fails, it remains open as an unsaved draft for export or testing.
 
 Version 1 and version 2 documents are normalized in memory to version 3 using current Rust catalog defaults (upgrading numeric faction IDs to faction definitions, defaulting `loadouts` to `[]`, and filling absent doctrine fields). Loading does not rewrite stored records or change the IndexedDB schema; save, rename, duplicate, and export produce version 3. Old documents receive the unit type's default loadout. See [INVENTORY.md](INVENTORY.md).
 

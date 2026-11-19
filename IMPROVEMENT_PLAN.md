@@ -222,19 +222,19 @@ Every scenario now beats all [ADR 0001](docs/decisions/0001-performance-targets.
 
 ### Fire on the move (doctrinal for test phase)
 
-- [ ] Add `Doctrine.fire_while_moving: bool`, **default off**. Schema v1 and v2 documents migrate to off.
-- [ ] Replace the hardcoded `Behavior` match in [item_actions.rs](crates/sim-core/src/item_actions.rs) with doctrine-driven eligibility: stationary behaviours may fire; moving behaviours (`Advancing`, `FallingBack`, `Investigating`) may fire only when `fire_while_moving` is enabled.
-- [ ] Align grenade throwing with movement/firing rules (currently grenades in `item_actions.rs` ignore `Behavior` entirely) and document the rule in [INVENTORY.md](INVENTORY.md).
-- [ ] Note behaviour change: falling-back units currently fire by default. With `fire_while_moving` defaulting to off, they stop firing while moving; update [MVP.md](MVP.md) and `fallback_can_fire_at_a_visible_enemy` to enable the doctrine explicitly.
-- [ ] No mechanical accuracy penalty during the test phase (reserved field from Phase 3 stays `1.0`).
-- [ ] Add a Doctrine Editor toggle and a doctrine-comparison behaviour test (same scenario and seed, on vs off produces observable shot-count differences while moving/repositioning).
+- [x] Add `Doctrine.fire_while_moving: bool`, **default off**. Schema v1 and v2 documents migrate to off.
+- [x] Replace the hardcoded `Behavior` match in [item_actions.rs](crates/sim-core/src/item_actions.rs) with doctrine-driven eligibility: stationary behaviours may fire; moving behaviours (`Advancing`, `FallingBack`, `Investigating`) may fire only when `fire_while_moving` is enabled.
+- [x] Align grenade throwing with movement/firing rules (currently grenades in `item_actions.rs` ignore `Behavior` entirely) and document the rule in [INVENTORY.md](INVENTORY.md).
+- [x] Note behaviour change: falling-back units currently fire by default. With `fire_while_moving` defaulting to off, they stop firing while moving; update [MVP.md](MVP.md) and `fallback_can_fire_at_a_visible_enemy` to enable the doctrine explicitly.
+- [x] No mechanical accuracy penalty during the test phase (reserved field from Phase 3 stays `1.0`).
+- [x] Add a Doctrine Editor toggle and a doctrine-comparison behaviour test (same scenario and seed, on vs off produces observable shot-count differences while moving/repositioning).
 
 ### Time limit
 
-- [ ] Change default time limit from 180 s to **600 s** (10 minutes).
-- [ ] Make `time_limit` optional (`Option<f64>` / `number | null`): `None`/`null` means **no limit**; numeric limits remain within 1–3600 s.
-- [ ] Add a time-limit control to Skirmish setup (Map Maker already has numeric editing): minutes input plus a "No time limit" toggle. Handle unlimited battles cleanly in the battle clock and results view.
-- [ ] Add an **End battle** action for live/paused battles that concludes immediately with a draw result (`reason: stopped`) showing survivors and casualties so unlimited battles do not require a silent reset.
+- [x] Change default time limit from 180 s to **600 s** (10 minutes).
+- [x] Make `time_limit` optional (`Option<f64>` / `number | null`): `None`/`null` means **no limit**; numeric limits remain within 1–3600 s.
+- [x] Add a time-limit control to Skirmish setup (Map Maker already has numeric editing): minutes input plus a "No time limit" toggle. Handle unlimited battles cleanly in the battle clock and results view.
+- [x] Add an **End battle** action for live/paused battles that concludes immediately with a draw result (`reason: stopped`) showing survivors and casualties so unlimited battles do not require a silent reset.
 
 ---
 
