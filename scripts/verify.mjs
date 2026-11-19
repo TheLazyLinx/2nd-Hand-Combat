@@ -24,7 +24,7 @@ const steps = fast
       'lint:rust',
       'test:rust',
       'deny:rust',
-      'bench:rust:quick',
+      'bench:rust',
       'check:types-sync',
       'fmt:web:check',
       'lint:web',

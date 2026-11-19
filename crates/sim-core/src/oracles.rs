@@ -623,3 +623,90 @@ fn search_matches_reference_oracle_for_fastest_protected_and_targeted_queries() 
         }
     }
 }
+
+#[test]
+fn astar_single_goal_matches_dijkstra_oracle_costs_across_presets_and_generated_maps() {
+    let mut maps: Vec<(String, ArenaMap)> = catalog()
+        .maps
+        .into_iter()
+        .map(|preset| (preset.name, preset.map))
+        .collect();
+    maps.push(("generated-14x10".into(), generated_test_map(404, 14, 10)));
+
+    for (name, m) in &maps {
+        let cache = crate::terrain::TerrainCache::new(m);
+        let terrain = cache.view(m);
+        let mut scratch = navigation::SearchScratch::new(cache.width, cache.height);
+        let start = Point { x: 2.5, y: 2.5 };
+        let threats = [
+            Point {
+                x: m.width as f64 - 3.5,
+                y: 2.5,
+            },
+            Point {
+                x: (m.width / 2) as f64 + 0.5,
+                y: (m.height / 2) as f64 + 0.5,
+            },
+        ];
+        let goals = [
+            Point {
+                x: m.width as f64 - 2.5,
+                y: m.height as f64 - 2.5,
+            },
+            Point {
+                x: (m.width / 2) as f64 + 0.5,
+                y: 2.5,
+            },
+            Point {
+                x: 2.5,
+                y: m.height as f64 - 2.5,
+            },
+        ];
+        for (pref, active_threats, revealed) in [
+            (RoutePreference::Fastest, &[][..], false),
+            (RoutePreference::Protected, &threats[..1], false),
+            (RoutePreference::Protected, &threats[..], true),
+        ] {
+            let expected = oracle_search_costs(m, start, active_threats, pref, revealed);
+            for goal in goals {
+                scratch.run_astar(terrain, start, goal, active_threats, pref, revealed);
+                let idx = (goal.y.floor() as u32 * m.width + goal.x.floor() as u32) as usize;
+                let exp = expected[idx];
+                match (scratch.cost(goal), exp.is_finite()) {
+                    (Some(got), true) => assert!(
+                        (got - exp).abs() < 1e-7,
+                        "{name} astar {pref:?} {goal:?}: actual={got} expected={exp}"
+                    ),
+                    (None, false) => {}
+                    (got, finite) => panic!(
+                        "{name} astar {pref:?} {goal:?}: actual={got:?} expected_finite={finite}"
+                    ),
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn single_pass_advance_toward_matches_whole_segment_validity_and_travel_time() {
+    let mut m = ArenaMap::flat(6, 2);
+    // Steep cliff in column 3 (x in 3..4) while columns 0..3 are flat open ground.
+    for y in 0..=2 {
+        for x in 4..=6 {
+            m.elevations[y * 7 + x] = 2.0;
+        }
+    }
+    let cache = crate::terrain::TerrainCache::without_neighbors(&m);
+    let terrain = cache.view(&m);
+    let a = Point { x: 0.5, y: 1.0 };
+    let b = Point { x: 4.5, y: 1.0 };
+    assert!(oracle_travel_time(&m, a, b).is_none());
+    // Even with a tiny budget that would finish inside the flat first cell, whole-segment steepness rejects movement.
+    assert_eq!(map::advance_toward_t(terrain, a, b, 0.05), (a, 0.0));
+
+    let mid = Point { x: 2.5, y: 1.0 };
+    let expected = oracle_travel_time(&m, a, mid).unwrap();
+    let (end, spent) = map::advance_toward_t(terrain, a, mid, expected + 1.0);
+    assert_eq!(end, mid);
+    assert!((spent - expected).abs() < 1e-9);
+}

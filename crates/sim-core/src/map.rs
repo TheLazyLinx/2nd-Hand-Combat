@@ -1,16 +1,95 @@
+//! Terrain geometry queries: bounds, grid-cached obstacle checks, unified ray visibility/exposure,
+//! vegetation spotting cost, swept-radius clearance, travel time, and single-pass advancement.
+//!
+//! Invariant: all `*_t` queries backed by `TerrainCache` match the reference oracles in `oracles.rs`
+//! (solid obstacles block at `>=`, ground blocks at `>`, corner grazing blocks both directions).
+
 use crate::{
     definitions::{surface_definition, SPEED},
+    terrain::Terrain,
     types::*,
 };
 
+#[cfg(test)]
+use crate::terrain::TerrainCache;
+
 pub(crate) const UNIT_RADIUS: f64 = 0.25;
 const EPS: f64 = 1e-9;
+
+/// Stack-backed sorted break points along a segment; avoids heap allocation for normal ray lengths.
+struct Cuts {
+    inline: [f64; 96],
+    len: usize,
+    overflow: Vec<f64>,
+}
+
+impl Cuts {
+    #[inline]
+    fn new() -> Self {
+        let mut inline = [0.0; 96];
+        inline[0] = 0.0;
+        inline[1] = 1.0;
+        Self {
+            inline,
+            len: 2,
+            overflow: Vec::new(),
+        }
+    }
+
+    #[inline]
+    fn push(&mut self, value: f64) {
+        if self.overflow.is_empty() {
+            if self.len < self.inline.len() {
+                self.inline[self.len] = value;
+                self.len += 1;
+            } else {
+                self.overflow.reserve(self.inline.len() * 2);
+                self.overflow.extend_from_slice(&self.inline[..self.len]);
+                self.overflow.push(value);
+            }
+        } else {
+            self.overflow.push(value);
+        }
+    }
+
+    fn sort_and_dedup(&mut self) {
+        if self.overflow.is_empty() {
+            let slice = &mut self.inline[..self.len];
+            slice.sort_by(|a, b| a.total_cmp(b));
+            if self.len > 1 {
+                let mut write = 1usize;
+                for read in 1..self.len {
+                    if (slice[read] - slice[write - 1]).abs() >= EPS {
+                        slice[write] = slice[read];
+                        write += 1;
+                    }
+                }
+                self.len = write;
+            }
+        } else {
+            self.overflow.sort_by(|a, b| a.total_cmp(b));
+            self.overflow.dedup_by(|a, b| (*a - *b).abs() < EPS);
+        }
+    }
+
+    #[inline]
+    fn as_slice(&self) -> &[f64] {
+        if self.overflow.is_empty() {
+            &self.inline[..self.len]
+        } else {
+            self.overflow.as_slice()
+        }
+    }
+}
+
+#[inline]
 fn point(a: Point, b: Point, t: f64) -> Point {
     Point {
         x: a.x + (b.x - a.x) * t,
         y: a.y + (b.y - a.y) * t,
     }
 }
+
 pub(crate) fn inside(m: &ArenaMap, p: Point) -> bool {
     p.x.is_finite()
         && p.y.is_finite()
@@ -19,19 +98,47 @@ pub(crate) fn inside(m: &ArenaMap, p: Point) -> bool {
         && p.x <= m.width as f64 - UNIT_RADIUS
         && p.y <= m.height as f64 - UNIT_RADIUS
 }
-pub(crate) fn blocked(m: &ArenaMap, p: Point) -> bool {
-    !inside(m, p)
-        || m.obstacles.iter().any(|o| {
-            let x = p.x.clamp(o.x as f64, (o.x.saturating_add(o.width)) as f64);
-            let y = p.y.clamp(o.y as f64, (o.y.saturating_add(o.height)) as f64);
-            (p.x - x).powi(2) + (p.y - y).powi(2) < UNIT_RADIUS.powi(2) - EPS
-        })
+
+pub(crate) fn blocked_t(t: Terrain<'_>, p: Point) -> bool {
+    if !inside(t.map, p) {
+        return true;
+    }
+    if !t.cache.has_obstacles {
+        return false;
+    }
+    let w = t.cache.width as i32;
+    let h = t.cache.height as i32;
+    let x0 = ((p.x - UNIT_RADIUS - EPS).floor() as i32).max(0);
+    let x1 = ((p.x + UNIT_RADIUS + EPS).floor() as i32).min(w - 1);
+    let y0 = ((p.y - UNIT_RADIUS - EPS).floor() as i32).max(0);
+    let y1 = ((p.y + UNIT_RADIUS + EPS).floor() as i32).min(h - 1);
+    let limit = UNIT_RADIUS * UNIT_RADIUS - EPS;
+    for cy in y0..=y1 {
+        let row = cy as usize * t.cache.width;
+        let fy = cy as f64;
+        let dy = p.y - p.y.clamp(fy, fy + 1.0);
+        let dy2 = dy * dy;
+        for cx in x0..=x1 {
+            if t.cache.occupied[row + cx as usize] {
+                let fx = cx as f64;
+                let dx = p.x - p.x.clamp(fx, fx + 1.0);
+                if dx * dx + dy2 < limit {
+                    return true;
+                }
+            }
+        }
+    }
+    false
 }
+
+#[inline]
 pub(crate) fn surface(m: &ArenaMap, p: Point) -> Surface {
     let x = (p.x.floor() as usize).min(m.width as usize - 1);
     let y = (p.y.floor() as usize).min(m.height as usize - 1);
     m.surfaces[y * m.width as usize + x]
 }
+
+#[inline]
 pub(crate) fn ground_height(m: &ArenaMap, p: Point) -> f64 {
     let x = (p.x.floor() as usize).min(m.width as usize - 1);
     let y = (p.y.floor() as usize).min(m.height as usize - 1);
@@ -48,45 +155,50 @@ pub(crate) fn ground_height(m: &ArenaMap, p: Point) -> f64 {
         a + (d - c) * u + (c - a) * v
     }
 }
+
 // Split at every grid line and diagonal: ground and surface are linear/constant in each interval.
-fn breaks(m: &ArenaMap, a: Point, b: Point) -> Vec<f64> {
-    let mut ts = vec![0.0, 1.0];
+fn breaks(m: &ArenaMap, a: Point, b: Point) -> Cuts {
+    let mut ts = Cuts::new();
     let dx = b.x - a.x;
     let dy = b.y - a.y;
-    for x in
-        (a.x.min(b.x).floor().max(0.0) as u32)..=(a.x.max(b.x).ceil().min(m.width as f64) as u32)
-    {
-        if dx.abs() > EPS {
-            let t = (x as f64 - a.x) / dx;
+    if dx.abs() > EPS {
+        let inv_dx = 1.0 / dx;
+        let x0 = a.x.min(b.x).floor().max(0.0) as u32;
+        let x1 = a.x.max(b.x).ceil().min(m.width as f64) as u32;
+        for x in x0..=x1 {
+            let t = (x as f64 - a.x) * inv_dx;
             if t > EPS && t < 1.0 - EPS {
                 ts.push(t);
             }
         }
     }
-    for y in
-        (a.y.min(b.y).floor().max(0.0) as u32)..=(a.y.max(b.y).ceil().min(m.height as f64) as u32)
-    {
-        if dy.abs() > EPS {
-            let t = (y as f64 - a.y) / dy;
+    if dy.abs() > EPS {
+        let inv_dy = 1.0 / dy;
+        let y0 = a.y.min(b.y).floor().max(0.0) as u32;
+        let y1 = a.y.max(b.y).ceil().min(m.height as f64) as u32;
+        for y in y0..=y1 {
+            let t = (y as f64 - a.y) * inv_dy;
             if t > EPS && t < 1.0 - EPS {
                 ts.push(t);
             }
         }
     }
     if (dx - dy).abs() > EPS {
-        for k in
-            ((a.x - a.y).min(b.x - b.y).floor() as i32)..=((a.x - a.y).max(b.x - b.y).ceil() as i32)
-        {
-            let t = (k as f64 - (a.x - a.y)) / (dx - dy);
+        let inv_d = 1.0 / (dx - dy);
+        let d0 = (a.x - a.y).min(b.x - b.y).floor() as i32;
+        let d1 = (a.x - a.y).max(b.x - b.y).ceil() as i32;
+        for k in d0..=d1 {
+            let t = (k as f64 - (a.x - a.y)) * inv_d;
             if t > EPS && t < 1.0 - EPS {
                 ts.push(t);
             }
         }
     }
-    ts.sort_by(|a, b| a.total_cmp(b));
-    ts.dedup_by(|a, b| (*a - *b).abs() < EPS);
+    ts.sort_and_dedup();
     ts
 }
+
+#[inline]
 fn rect_interval(a: Point, b: Point, x0: f64, y0: f64, x1: f64, y1: f64) -> Option<(f64, f64)> {
     let (mut lo, mut hi) = (0.0_f64, 1.0_f64);
     for (v, d, min, max) in [(a.x, b.x - a.x, x0, x1), (a.y, b.y - a.y, y0, y1)] {
@@ -106,173 +218,266 @@ fn rect_interval(a: Point, b: Point, x0: f64, y0: f64, x1: f64, y1: f64) -> Opti
     }
     Some((lo, hi))
 }
-pub(crate) fn visible(m: &ArenaMap, a: Point, b: Point, ah: f64, bh: f64) -> bool {
-    let za = ground_height(m, a) + ah;
-    let zb = ground_height(m, b) + bh;
-    let cuts = breaks(m, a, b);
-    for t in &cuts {
-        let z = za + (zb - za) * t;
-        if ground_height(m, point(a, b, *t)) > z + EPS {
-            return false;
-        }
-    }
-    for o in &m.obstacles {
-        if let Some((lo, hi)) = rect_interval(
-            a,
-            b,
-            o.x as f64,
-            o.y as f64,
-            (o.x.saturating_add(o.width)) as f64,
-            (o.y.saturating_add(o.height)) as f64,
-        ) {
-            for t in cuts
-                .iter()
-                .copied()
-                .filter(|t| *t > lo && *t < hi)
-                .chain([lo, hi])
-            {
-                if ground_height(m, point(a, b, t)) + o.height_metres >= za + (zb - za) * t - EPS {
+
+/// Shared ground + grid-obstacle ray evaluator for N simultaneous rays sharing horizontal path `a -> b`.
+/// When `require_first` is true, returns early as soon as ray 0 (eye sight) is blocked.
+fn eval_rays_t<const N: usize>(
+    t: Terrain<'_>,
+    a: Point,
+    b: Point,
+    cuts: &[f64],
+    ray_a: [f64; N],
+    ray_b: [f64; N],
+    require_first: bool,
+) -> [bool; N] {
+    let cache = t.cache;
+    let m = t.map;
+    let w = cache.width as i32;
+    let h = cache.height as i32;
+    let mut unblocked = [true; N];
+    let mut open_count = N;
+
+    let mut test = |u: f64, top: f64, solid: bool| -> bool {
+        for idx in 0..N {
+            if !unblocked[idx] {
+                continue;
+            }
+            let z = ray_a[idx] + (ray_b[idx] - ray_a[idx]) * u;
+            let hit = if solid { top >= z - EPS } else { top > z + EPS };
+            if hit {
+                unblocked[idx] = false;
+                open_count -= 1;
+                if (require_first && idx == 0) || open_count == 0 {
                     return false;
                 }
             }
         }
+        true
+    };
+
+    if !cache.is_flat {
+        for &u in cuts {
+            if !test(u, ground_height(m, point(a, b, u)), false) {
+                return unblocked;
+            }
+        }
+    } else if !test(0.0, cache.flat_elevation, false) || !test(1.0, cache.flat_elevation, false) {
+        return unblocked;
     }
-    true
+
+    if !cache.has_obstacles {
+        return unblocked;
+    }
+
+    let pad_x = EPS * (b.x - a.x).abs().max(1.0) * 4.0;
+    let pad_y = EPS * (b.y - a.y).abs().max(1.0) * 4.0;
+
+    for &u in cuts {
+        let p = point(a, b, u);
+        let x0 = ((p.x - pad_x).floor() as i32).max(0);
+        let x1 = ((p.x + pad_x).floor() as i32).min(w - 1);
+        let y0 = ((p.y - pad_y).floor() as i32).max(0);
+        let y1 = ((p.y + pad_y).floor() as i32).min(h - 1);
+        for cy in y0..=y1 {
+            let row = cy as usize * cache.width;
+            for cx in x0..=x1 {
+                let cell = row + cx as usize;
+                if !cache.occupied[cell] {
+                    continue;
+                }
+                let fx = cx as f64;
+                let fy = cy as f64;
+                let Some((lo, hi)) = rect_interval(a, b, fx, fy, fx + 1.0, fy + 1.0) else {
+                    continue;
+                };
+                let oh = cache.obstacle_height[cell];
+                if u > lo && u < hi && !test(u, cache.ground_height(m, p) + oh, true) {
+                    return unblocked;
+                }
+                if (u - lo).abs() <= EPS * 4.0
+                    && !test(lo, cache.ground_height(m, point(a, b, lo)) + oh, true)
+                {
+                    return unblocked;
+                }
+                if (u - hi).abs() <= EPS * 4.0
+                    && (hi - lo).abs() > 0.0
+                    && !test(hi, cache.ground_height(m, point(a, b, hi)) + oh, true)
+                {
+                    return unblocked;
+                }
+            }
+        }
+    }
+    unblocked
 }
-pub(crate) fn clear(m: &ArenaMap, a: Point, b: Point) -> bool {
-    visible(m, a, b, 1.6, 1.6)
+
+pub(crate) fn visible_t(t: Terrain<'_>, a: Point, b: Point, ah: f64, bh: f64) -> bool {
+    let ga = t.cache.ground_height(t.map, a);
+    let gb = t.cache.ground_height(t.map, b);
+    let cuts = breaks(t.map, a, b);
+    eval_rays_t(t, a, b, cuts.as_slice(), [ga + ah], [gb + bh], true)[0]
 }
-pub(crate) fn shot_fraction(m: &ArenaMap, a: Point, b: Point) -> f64 {
-    [0.4, 0.9, 1.4]
-        .iter()
-        .filter(|h| visible(m, a, b, 1.4, **h))
-        .count() as f64
-        / 3.0
+
+pub(crate) fn clear_t(t: Terrain<'_>, a: Point, b: Point) -> bool {
+    visible_t(t, a, b, 1.6, 1.6)
 }
-pub(crate) fn spotting_cost(m: &ArenaMap, a: Point, b: Point) -> f64 {
-    spotting_cost_with_cuts(m, a, b, &breaks(m, a, b))
+
+pub(crate) fn shot_fraction_t(t: Terrain<'_>, a: Point, b: Point) -> f64 {
+    let ga = t.cache.ground_height(t.map, a);
+    let gb = t.cache.ground_height(t.map, b);
+    let cuts = breaks(t.map, a, b);
+    let open = eval_rays_t(
+        t,
+        a,
+        b,
+        cuts.as_slice(),
+        [ga + 1.4; 3],
+        [gb + 0.4, gb + 0.9, gb + 1.4],
+        false,
+    );
+    open.into_iter().filter(|ok| *ok).count() as f64 / 3.0
 }
-fn spotting_cost_with_cuts(m: &ArenaMap, a: Point, b: Point, cuts: &[f64]) -> f64 {
+
+pub(crate) fn spotting_cost_t(t: Terrain<'_>, a: Point, b: Point) -> f64 {
+    let cuts = breaks(t.map, a, b);
+    spotting_cost_with_cuts_t(t, a, b, cuts.as_slice())
+}
+
+fn spotting_cost_with_cuts_t(t: Terrain<'_>, a: Point, b: Point, cuts: &[f64]) -> f64 {
     let len = a.distance(b);
-    let za = ground_height(m, a) + 1.6;
-    let zb = ground_height(m, b) + 1.6;
+    let ga = t.cache.ground_height(t.map, a);
+    let gb = t.cache.ground_height(t.map, b);
+    let za = ga + 1.6;
+    let zb = gb + 1.6;
+    let is_flat = t.cache.is_flat;
     let mut cost = 0.0;
     for pair in cuts.windows(2) {
-        let mid = (pair[0] + pair[1]) / 2.0;
-        let def = surface_definition(surface(m, point(a, b, mid)));
+        let mid = (pair[0] + pair[1]) * 0.5;
+        let def = t.cache.cell_surface(point(a, b, mid));
         let mut fraction = 0.0;
-        if def.vegetation_height > 0.0 {
-            let delta = |t: f64| {
-                ground_height(m, point(a, b, t)) + def.vegetation_height - (za + (zb - za) * t)
-            };
-            let d0 = delta(pair[0]);
-            let d1 = delta(pair[1]);
-            fraction = if d0 >= 0.0 && d1 >= 0.0 {
-                1.0
-            } else if d0 < 0.0 && d1 < 0.0 {
-                0.0
+        if def.veg_height > 0.0 {
+            if is_flat {
+                fraction = if def.veg_height >= 1.6 { 1.0 } else { 0.0 };
             } else {
-                let crossing = d0 / (d0 - d1);
-                if d0 >= 0.0 {
-                    crossing
+                let delta = |u: f64| {
+                    ground_height(t.map, point(a, b, u)) + def.veg_height - (za + (zb - za) * u)
+                };
+                let d0 = delta(pair[0]);
+                let d1 = delta(pair[1]);
+                fraction = if d0 >= 0.0 && d1 >= 0.0 {
+                    1.0
+                } else if d0 < 0.0 && d1 < 0.0 {
+                    0.0
                 } else {
-                    1.0 - crossing
-                }
-            };
+                    let crossing = d0 / (d0 - d1);
+                    if d0 >= 0.0 {
+                        crossing
+                    } else {
+                        1.0 - crossing
+                    }
+                };
+            }
         }
-        cost += len * (pair[1] - pair[0]) * (1.0 + (def.spotting_multiplier - 1.0) * fraction);
+        cost += len * (pair[1] - pair[0]) * (1.0 + (def.spot_mult - 1.0) * fraction);
     }
     cost
 }
-pub(crate) fn detectable(m: &ArenaMap, a: Point, b: Point, revealed: bool) -> bool {
-    let d = a.distance(b);
-    d <= 14.0 && clear(m, a, b) && (revealed || d <= 2.0 || spotting_cost(m, a, b) <= 14.0 + EPS)
+
+pub(crate) fn detectable_t(t: Terrain<'_>, a: Point, b: Point, revealed: bool) -> bool {
+    let distance = a.distance(b);
+    if distance > 14.0 {
+        return false;
+    }
+    let ga = t.cache.ground_height(t.map, a);
+    let gb = t.cache.ground_height(t.map, b);
+    let cuts = breaks(t.map, a, b);
+    if !eval_rays_t(t, a, b, cuts.as_slice(), [ga + 1.6], [gb + 1.6], true)[0] {
+        return false;
+    }
+    revealed || distance <= 2.0 || spotting_cost_with_cuts_t(t, a, b, cuts.as_slice()) <= 14.0 + EPS
 }
-/// Detection multiplied by target exposure, sharing ground intersections for all four rays.
-/// Navigation uses this hot query repeatedly; its result matches detectable * shot_fraction.
-pub(crate) fn exposure(m: &ArenaMap, a: Point, b: Point, revealed: bool) -> f64 {
+
+/// Detection multiplied by target exposure, sharing break points and grid traversal for all four rays.
+/// Matches `if detectable_t(t, a, b, revealed) { shot_fraction_t(t, a, b) } else { 0.0 }`.
+pub(crate) fn exposure_t(t: Terrain<'_>, a: Point, b: Point, revealed: bool) -> f64 {
     let distance = a.distance(b);
     if distance > 14.0 {
         return 0.0;
     }
-    let cuts = breaks(m, a, b);
-    let ground_a = ground_height(m, a);
-    let ground_b = ground_height(m, b);
-    let eye_a = ground_a + 1.6;
-    let eye_b = ground_b + 1.6;
-    let muzzle = ground_a + 1.4;
-    let targets = [ground_b + 0.4, ground_b + 0.9, ground_b + 1.4];
-    let mut unblocked = [true; 3];
-    let mut test = |t: f64, top: f64, solid: bool| {
-        let blocks = |height: f64| {
-            if solid {
-                top >= height - EPS
-            } else {
-                top > height + EPS
-            }
-        };
-        if blocks(eye_a + (eye_b - eye_a) * t) {
-            return false;
-        }
-        for (open, target) in unblocked.iter_mut().zip(targets) {
-            if *open && blocks(muzzle + (target - muzzle) * t) {
-                *open = false;
-            }
-        }
-        true
-    };
-    for t in &cuts {
-        if !test(*t, ground_height(m, point(a, b, *t)), false) {
-            return 0.0;
-        }
-    }
-    for o in &m.obstacles {
-        if let Some((lo, hi)) = rect_interval(
-            a,
-            b,
-            o.x as f64,
-            o.y as f64,
-            o.x.saturating_add(o.width) as f64,
-            o.y.saturating_add(o.height) as f64,
-        ) {
-            for t in cuts
-                .iter()
-                .copied()
-                .filter(|t| *t > lo && *t < hi)
-                .chain([lo, hi])
-            {
-                if !test(t, ground_height(m, point(a, b, t)) + o.height_metres, true) {
-                    return 0.0;
-                }
-            }
-        }
-    }
-    if !revealed && distance > 2.0 && spotting_cost_with_cuts(m, a, b, &cuts) > 14.0 + EPS {
+    let ga = t.cache.ground_height(t.map, a);
+    let gb = t.cache.ground_height(t.map, b);
+    let cuts = breaks(t.map, a, b);
+    let open = eval_rays_t(
+        t,
+        a,
+        b,
+        cuts.as_slice(),
+        [ga + 1.6, ga + 1.4, ga + 1.4, ga + 1.4],
+        [gb + 1.6, gb + 0.4, gb + 0.9, gb + 1.4],
+        true,
+    );
+    if !open[0] {
         return 0.0;
     }
-    unblocked.iter().filter(|open| **open).count() as f64 / 3.0
+    if !revealed
+        && distance > 2.0
+        && spotting_cost_with_cuts_t(t, a, b, cuts.as_slice()) > 14.0 + EPS
+    {
+        return 0.0;
+    }
+    open[1..].iter().filter(|ok| **ok).count() as f64 / 3.0
 }
+
+#[inline]
+fn slope_factor(grade: f64) -> f64 {
+    if grade.abs() > 0.6 + EPS {
+        return 0.0;
+    }
+    if grade >= 0.0 {
+        1.0 / (1.0 + 2.0 * grade)
+    } else if grade >= -0.2 {
+        1.0 + 0.15 * (-grade) / 0.2
+    } else {
+        1.15 - 0.6 * (-grade - 0.2) / 0.4
+    }
+}
+
+#[inline]
+fn multiplier_t(t: Terrain<'_>, a: Point, b: Point) -> f64 {
+    let d = a.distance(b);
+    if d < EPS {
+        return t.cache.cell_surface(a).move_mult;
+    }
+    let move_mult = t.cache.cell_surface(point(a, b, 0.5)).move_mult;
+    if t.cache.is_flat {
+        return move_mult.min(1.3);
+    }
+    let grade = (ground_height(t.map, b) - ground_height(t.map, a)) / d;
+    let slope = slope_factor(grade);
+    if slope == 0.0 {
+        return 0.0;
+    }
+    (slope * move_mult).min(1.3)
+}
+
 fn multiplier(m: &ArenaMap, a: Point, b: Point) -> f64 {
     let d = a.distance(b);
     if d < EPS {
         return surface_definition(surface(m, a)).movement_multiplier;
     }
     let grade = (ground_height(m, b) - ground_height(m, a)) / d;
-    if grade.abs() > 0.6 + EPS {
+    let slope = slope_factor(grade);
+    if slope == 0.0 {
         return 0.0;
     }
-    let slope = if grade >= 0.0 {
-        1.0 / (1.0 + 2.0 * grade)
-    } else if grade >= -0.2 {
-        1.0 + 0.15 * (-grade) / 0.2
-    } else {
-        1.15 - 0.6 * (-grade - 0.2) / 0.4
-    };
     (slope * surface_definition(surface(m, point(a, b, 0.5))).movement_multiplier).min(1.3)
 }
+
 pub(crate) fn movement_multiplier(m: &ArenaMap, a: Point, b: Point) -> f64 {
     multiplier(m, a, b)
 }
+
+#[inline]
 fn segment_point_distance(a: Point, b: Point, p: Point) -> f64 {
     let dx = b.x - a.x;
     let dy = b.y - a.y;
@@ -284,47 +489,97 @@ fn segment_point_distance(a: Point, b: Point, p: Point) -> f64 {
     };
     point(a, b, t.clamp(0.0, 1.0)).distance(p)
 }
-fn sweep_clear(m: &ArenaMap, a: Point, b: Point) -> bool {
-    if blocked(m, a) || blocked(m, b) {
+
+#[inline]
+fn cell_blocks_sweep(a: Point, b: Point, x: f64, y: f64) -> bool {
+    let x1 = x + 1.0;
+    let y1 = y + 1.0;
+    rect_interval(a, b, x - UNIT_RADIUS + EPS, y, x1 + UNIT_RADIUS - EPS, y1).is_some()
+        || rect_interval(a, b, x, y - UNIT_RADIUS + EPS, x1, y1 + UNIT_RADIUS - EPS).is_some()
+        || [
+            Point { x, y },
+            Point { x: x1, y },
+            Point { x, y: y1 },
+            Point { x: x1, y: y1 },
+        ]
+        .iter()
+        .any(|p| segment_point_distance(a, b, *p) < UNIT_RADIUS - EPS)
+}
+
+fn sweep_clear_t(t: Terrain<'_>, a: Point, b: Point) -> bool {
+    if blocked_t(t, a) || blocked_t(t, b) {
         return false;
     }
-    for o in &m.obstacles {
-        let (x, y, x1, y1) = (
-            o.x as f64,
-            o.y as f64,
-            (o.x.saturating_add(o.width)) as f64,
-            (o.y.saturating_add(o.height)) as f64,
-        );
-        if rect_interval(a, b, x - UNIT_RADIUS + EPS, y, x1 + UNIT_RADIUS - EPS, y1).is_some()
-            || rect_interval(a, b, x, y - UNIT_RADIUS + EPS, x1, y1 + UNIT_RADIUS - EPS).is_some()
-            || [
-                Point { x, y },
-                Point { x: x1, y },
-                Point { x, y: y1 },
-                Point { x: x1, y: y1 },
-            ]
-            .iter()
-            .any(|p| segment_point_distance(a, b, *p) < UNIT_RADIUS - EPS)
-        {
-            return false;
+    if !t.cache.has_obstacles {
+        return true;
+    }
+    let dx = b.x - a.x;
+    let dy = b.y - a.y;
+    let w = t.cache.width as i32;
+    let h = t.cache.height as i32;
+    let pad = UNIT_RADIUS + EPS;
+
+    if dx.abs() >= dy.abs() {
+        if dx.abs() < EPS {
+            return true;
+        }
+        let inv_dx = 1.0 / dx;
+        let cx_min = ((a.x.min(b.x) - pad).floor() as i32).max(0);
+        let cx_max = ((a.x.max(b.x) + pad).floor() as i32).min(w - 1);
+        for cx in cx_min..=cx_max {
+            let fx = cx as f64;
+            let t0 = ((fx - pad - a.x) * inv_dx).clamp(0.0, 1.0);
+            let t1 = ((fx + 1.0 + pad - a.x) * inv_dx).clamp(0.0, 1.0);
+            let y0 = a.y + dy * t0;
+            let y1 = a.y + dy * t1;
+            let cy_min = ((y0.min(y1) - pad).floor() as i32).max(0);
+            let cy_max = ((y0.max(y1) + pad).floor() as i32).min(h - 1);
+            for cy in cy_min..=cy_max {
+                if t.cache.occupied[cy as usize * t.cache.width + cx as usize]
+                    && cell_blocks_sweep(a, b, fx, cy as f64)
+                {
+                    return false;
+                }
+            }
+        }
+    } else {
+        let inv_dy = 1.0 / dy;
+        let cy_min = ((a.y.min(b.y) - pad).floor() as i32).max(0);
+        let cy_max = ((a.y.max(b.y) + pad).floor() as i32).min(h - 1);
+        for cy in cy_min..=cy_max {
+            let fy = cy as f64;
+            let t0 = ((fy - pad - a.y) * inv_dy).clamp(0.0, 1.0);
+            let t1 = ((fy + 1.0 + pad - a.y) * inv_dy).clamp(0.0, 1.0);
+            let x0 = a.x + dx * t0;
+            let x1 = a.x + dx * t1;
+            let cx_min = ((x0.min(x1) - pad).floor() as i32).max(0);
+            let cx_max = ((x0.max(x1) + pad).floor() as i32).min(w - 1);
+            let row = cy as usize * t.cache.width;
+            for cx in cx_min..=cx_max {
+                if t.cache.occupied[row + cx as usize] && cell_blocks_sweep(a, b, cx as f64, fy) {
+                    return false;
+                }
+            }
         }
     }
     true
 }
+
 pub(crate) fn ground_traversable(m: &ArenaMap, a: Point, b: Point) -> bool {
-    breaks(m, a, b)
+    let cuts = breaks(m, a, b);
+    cuts.as_slice()
         .windows(2)
         .all(|pair| multiplier(m, point(a, b, pair[0]), point(a, b, pair[1])) > 0.0)
 }
-pub(crate) fn travel_time(m: &ArenaMap, a: Point, b: Point) -> Option<f64> {
-    if !sweep_clear(m, a, b) {
-        return None;
-    }
+
+/// Travel time along an already sweep-cleared segment `a -> b` (used to precompute neighbor edges).
+pub(crate) fn segment_travel_time(t: Terrain<'_>, a: Point, b: Point) -> Option<f64> {
+    let cuts = breaks(t.map, a, b);
     let mut time = 0.0;
-    for pair in breaks(m, a, b).windows(2) {
+    for pair in cuts.as_slice().windows(2) {
         let p = point(a, b, pair[0]);
         let q = point(a, b, pair[1]);
-        let speed = multiplier(m, p, q);
+        let speed = multiplier_t(t, p, q);
         if speed <= 0.0 {
             return None;
         }
@@ -332,24 +587,86 @@ pub(crate) fn travel_time(m: &ArenaMap, a: Point, b: Point) -> Option<f64> {
     }
     Some(time)
 }
-pub(crate) fn advance_toward(m: &ArenaMap, a: Point, b: Point, budget: f64) -> (Point, f64) {
-    if budget <= 0.0 {
+
+pub(crate) fn travel_time_t(t: Terrain<'_>, a: Point, b: Point) -> Option<f64> {
+    if !sweep_clear_t(t, a, b) {
+        return None;
+    }
+    segment_travel_time(t, a, b)
+}
+
+/// Single-pass advancement along `a -> b` with time budget `budget`, preserving whole-segment validity.
+pub(crate) fn advance_toward_t(t: Terrain<'_>, a: Point, b: Point, budget: f64) -> (Point, f64) {
+    if budget <= 0.0 || !sweep_clear_t(t, a, b) {
         return (a, 0.0);
     }
-    if travel_time(m, a, b).is_none() {
-        return (a, 0.0);
-    }
+    let cuts = breaks(t.map, a, b);
     let mut spent = 0.0;
-    for pair in breaks(m, a, b).windows(2) {
+    let mut stopped: Option<(Point, f64)> = None;
+    for pair in cuts.as_slice().windows(2) {
         let p = point(a, b, pair[0]);
         let q = point(a, b, pair[1]);
-        let time = p.distance(q) / (multiplier(m, p, q) * SPEED);
-        if spent + time > budget {
-            return (point(p, q, (budget - spent) / time), budget);
+        let speed = multiplier_t(t, p, q);
+        if speed <= 0.0 {
+            return (a, 0.0);
         }
-        spent += time;
+        if stopped.is_none() {
+            let time = p.distance(q) / (speed * SPEED);
+            if spent + time > budget {
+                stopped = Some((point(p, q, (budget - spent) / time), budget));
+            } else {
+                spent += time;
+            }
+        }
     }
-    (b, spent)
+    stopped.unwrap_or((b, spent))
+}
+
+// Convenience wrappers for standalone tests that operate on a raw `&ArenaMap`.
+#[cfg(test)]
+pub(crate) fn blocked(m: &ArenaMap, p: Point) -> bool {
+    let cache = TerrainCache::without_neighbors(m);
+    blocked_t(cache.view(m), p)
+}
+#[cfg(test)]
+pub(crate) fn visible(m: &ArenaMap, a: Point, b: Point, ah: f64, bh: f64) -> bool {
+    let cache = TerrainCache::without_neighbors(m);
+    visible_t(cache.view(m), a, b, ah, bh)
+}
+#[cfg(test)]
+pub(crate) fn clear(m: &ArenaMap, a: Point, b: Point) -> bool {
+    let cache = TerrainCache::without_neighbors(m);
+    clear_t(cache.view(m), a, b)
+}
+#[cfg(test)]
+pub(crate) fn shot_fraction(m: &ArenaMap, a: Point, b: Point) -> f64 {
+    let cache = TerrainCache::without_neighbors(m);
+    shot_fraction_t(cache.view(m), a, b)
+}
+#[cfg(test)]
+pub(crate) fn spotting_cost(m: &ArenaMap, a: Point, b: Point) -> f64 {
+    let cache = TerrainCache::without_neighbors(m);
+    spotting_cost_t(cache.view(m), a, b)
+}
+#[cfg(test)]
+pub(crate) fn detectable(m: &ArenaMap, a: Point, b: Point, revealed: bool) -> bool {
+    let cache = TerrainCache::without_neighbors(m);
+    detectable_t(cache.view(m), a, b, revealed)
+}
+#[cfg(test)]
+pub(crate) fn exposure(m: &ArenaMap, a: Point, b: Point, revealed: bool) -> f64 {
+    let cache = TerrainCache::without_neighbors(m);
+    exposure_t(cache.view(m), a, b, revealed)
+}
+#[cfg(test)]
+pub(crate) fn travel_time(m: &ArenaMap, a: Point, b: Point) -> Option<f64> {
+    let cache = TerrainCache::without_neighbors(m);
+    travel_time_t(cache.view(m), a, b)
+}
+#[cfg(test)]
+pub(crate) fn advance_toward(m: &ArenaMap, a: Point, b: Point, budget: f64) -> (Point, f64) {
+    let cache = TerrainCache::without_neighbors(m);
+    advance_toward_t(cache.view(m), a, b, budget)
 }
 
 #[cfg(test)]

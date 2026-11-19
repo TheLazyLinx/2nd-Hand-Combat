@@ -1,6 +1,6 @@
 # Improvement Plan
 
-Status: in progress (updated 19 November 2026 against `main` `0acc5c8`). Phase 0 (0A, 0B, 0C, 0D) is complete; Phase 1 is next. Approved decisions are recorded in [docs/decisions/](docs/decisions/README.md) and summarized in [Decisions](#decisions) at the end.
+Status: in progress (updated 19 November 2026 against `main` `0acc5c8`). Phase 0 (0A–0D) and Phase 1 are complete; Phase 2 is next. Approved decisions are recorded in [docs/decisions/](docs/decisions/README.md) and summarized in [Decisions](#decisions) at the end.
 
 This file is the single tracker for this work. Agents check off items in the same change that completes them.
 
@@ -118,19 +118,36 @@ These targets apply to every preset at 8 v 8 and to 128 × 128 with 1,500 obstac
 
 ## Phase 1 — Terrain, navigation, and hot-path performance
 
-Behaviour should not change; Phase 0 oracles and outcome fingerprints verify equivalence.
+Behaviour preserved; Phase 0 reference oracles (including A* and single-pass `advance_toward`) and all 13 baseline outcome fingerprints verified unchanged.
 
-- [ ] **Static terrain cache built once per battle** (and per analysis): per-cell obstacle height and occupancy grid (obstacles are integer-aligned rectangles, so rasterisation is exact), surface definition per cell, and blocked flags.
-- [ ] Replace full-obstacle loops with grid traversal along existing break points. Preserve exact edge semantics: solid obstacles block at `>=`, ground at `>`, corner grazing blocks both directions.
-- [ ] **Precompute the 8-neighbour travel-time table** once per battle. Searches read it instead of calling `travel_time` per edge.
-- [ ] Make `breaks()` allocation-free (reusable buffer or iterator). Reuse search buffers (`costs`, `previous`, heap, risk cache) via a per-battle scratch struct.
-- [ ] Single-goal searches (`Route::prepare`) use A* with an admissible heuristic (`distance / max_possible_speed`). Multi-target searches remain Dijkstra with early exit.
-- [ ] Single-pass `advance_toward` (remove redundant `travel_time` pre-check and duplicate `breaks()` call).
-- [ ] Unify `exposure` and `detectable` × `shot_fraction` behind one shared ray evaluation.
-- [ ] **Eliminate per-tick inventory and perception waste introduced by `feature/inventory`:**
-  - Cache `weight_grams`, `stowed_volume_ml`, and `load_factor` inside `Inventory`, updating only on mutation instead of calling `totals()` (with its O(m²) duplicate scan and string lookups) on every movement tick, `can_use()`, and snapshot.
-  - Avoid running full O(n²) `observe_all` twice every tick: reuse pre-movement observations for pairs where neither unit moved or changed reveal state, or compute post-movement deltas only for moved/affected units.
-  - Avoid cloning `Inventory` and heap-allocating `WeaponDefinition` strings inside the per-tick step loop.
+- [x] **Static terrain cache built once per battle** (and per analysis) in [terrain.rs](crates/sim-core/src/terrain.rs): pre-rasterized per-cell obstacle occupancy and height grid, contiguous `CellSurface` properties, flat-map fast path, and `Terrain<'_>` view.
+- [x] Replaced full-obstacle loops in [map.rs](crates/sim-core/src/map.rs) with exact grid traversal along break points (`eval_rays_t`) and `x`/`y`-strip swept-radius checks (`sweep_clear_t`), preserving `>=` obstacle blocking, `>` ground blocking, and two-way corner grazing.
+- [x] **Precomputed the 8-neighbour travel-time table** once per battle inside `TerrainCache::new`; `SearchScratch` reads precomputed edge times and direction offsets directly.
+- [x] Made `breaks()` allocation-free for normal ray lengths via stack-backed `Cuts` (`[f64; 96]` inline buffer with heap fallback). Reused pathfinding buffers across the entire battle via generation-stamped `SearchScratch` (`O(1)` reset between searches).
+- [x] Single-goal searches (`Route::prepare_with`) use A* with an admissible, consistent heuristic (`distance / MAX_SPEED`); multi-target and full-grid searches remain Dijkstra with early exit.
+- [x] Single-pass `advance_toward_t` (one `sweep_clear_t`, one `breaks()`, one multiplier loop while preserving whole-segment validity).
+- [x] Unified `visible_t`, `shot_fraction_t`, `detectable_t`, and `exposure_t` behind one shared `eval_rays_t` kernel, and replaced duplicate `detectable` + `shot_fraction` pairs in [decisions.rs](crates/sim-core/src/decisions.rs) with `exposure_t`.
+- [x] **Eliminated per-tick inventory and perception waste:**
+  - Cached `weight_grams`, `stowed_volume_ml`, and `load_factor` inside [inventory.rs](crates/sim-core/src/inventory.rs) (updated only on mutation); made `consume()` validate and update in place without cloning `Inventory`.
+  - Added incremental post-movement perception (`perception::refresh_post_movement`) reusing pre-movement observations for stationary unit pairs and reusing observation buffers inside `Battle`.
+  - Replaced per-tick heap-allocated `WeaponDefinition` with static `&'static WeaponSpec` in [definitions.rs](crates/sim-core/src/definitions.rs), [item_actions.rs](crates/sim-core/src/item_actions.rs), and [combat.rs](crates/sim-core/src/combat.rs).
+
+#### Phase 1 benchmark results (`npm run bench:rust`, native release, 8 v 8, Cover doctrine)
+
+| Scenario | Mean (before → after) | p99 (before → after) | Worst (before → after) | >50 ms |
+| --- | ---: | ---: | ---: | ---: |
+| `training-fastest` | 0.543 → 0.140 ms | 11.99 → 0.97 ms | 31.16 → 1.44 ms | 0 → 0 |
+| `training-protected` | 4.203 → 1.214 ms | 42.36 → 9.44 ms | 59.40 → 10.85 ms | 1 → 0 |
+| `ridge-fastest` | 0.252 → 0.264 ms | 4.76 → 2.48 ms | 28.86 → 3.42 ms | 0 → 0 |
+| `ridge-protected` | 1.532 → 0.888 ms | 21.21 → 9.50 ms | 32.82 → 18.68 ms | 0 → 0 |
+| `woodland-fastest` | 0.585 → 0.180 ms | 8.42 → 1.86 ms | 20.59 → 2.32 ms | 0 → 0 |
+| `woodland-protected` | 0.269 → 0.473 ms | 6.31 → 6.24 ms | 29.12 → 17.53 ms | 0 → 0 |
+| `128x128-open-fastest` | 0.318 → 0.036 ms | 2.91 → 0.33 ms | 381.68 → 8.59 ms | 1 → 0 |
+| `128x128-open-protected` | 0.831 → 0.022 ms | 12.68 → 0.33 ms | 372.92 → 8.03 ms | 1 → 0 |
+| `128x128-obs1500-fastest` | 66.881 → 0.262 ms | — → 5.91 ms | 31,556.46 → 13.58 ms | 5 → 0 |
+| `128x128-obs1500-protected` | 68.070 → 0.572 ms | — → 17.13 ms | 32,315.66 → 42.58 ms | 5 → 0 |
+
+All six presets, `128×128` open, and `128×128-obs1500-fastest` meet every native release proxy target (mean ≤ 2.5 ms, p99 ≤ 10 ms, worst ≤ 20 ms). On `128x128-obs1500-protected`, 90% of step time is now in `Decide` (full-grid scans and simultaneous decision ticks), which Phase 2 addresses directly. Full `npm run bench:rust` now finishes in ~4 s and is wired into `npm run verify`.
 
 Deferred until measured: hierarchical pathfinding, flow fields, map chunking.
 

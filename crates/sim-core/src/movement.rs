@@ -1,6 +1,32 @@
-use crate::{types::*, unit::Unit};
+//! Executes per-tick unit movement along cached routes and records which units changed position.
+
+use crate::{
+    navigation::{RouteRequest, SearchScratch},
+    terrain::Terrain,
+    types::*,
+    unit::Unit,
+};
+
+#[cfg(test)]
+use crate::terrain::TerrainCache;
+
+#[cfg(test)]
 pub(crate) fn execute(units: &mut [Unit], map: &ArenaMap, tick: u32) {
-    for u in units {
+    let cache = TerrainCache::new(map);
+    let mut scratch = SearchScratch::new(cache.width, cache.height);
+    let mut moved = vec![false; units.len()];
+    execute_with(units, cache.view(map), &mut scratch, tick, &mut moved);
+}
+
+pub(crate) fn execute_with(
+    units: &mut [Unit],
+    terrain: Terrain<'_>,
+    scratch: &mut SearchScratch,
+    tick: u32,
+    moved: &mut [bool],
+) {
+    for (u, has_moved) in units.iter_mut().zip(moved.iter_mut()) {
+        *has_moved = false;
         u.movement_multiplier = 0.0;
         if u.hp <= 0.0 {
             continue;
@@ -13,16 +39,19 @@ pub(crate) fn execute(units: &mut [Unit], map: &ArenaMap, tick: u32) {
             } else {
                 u.known_threats.as_slice()
             };
-            u.route.prepare(
-                map,
-                u.position,
-                goal,
-                threats,
-                u.placement.doctrine.route_preference,
-                tick < u.revealed_until,
+            u.route.prepare_with(
+                terrain,
+                scratch,
+                RouteRequest {
+                    from: u.position,
+                    goal,
+                    threats,
+                    preference: u.placement.doctrine.route_preference,
+                    revealed: tick < u.revealed_until,
+                },
             );
-            u.position = u.route.advance(
-                map,
+            u.position = u.route.advance_t(
+                terrain,
                 u.position,
                 crate::definitions::STEP * u.inventory.load_factor() * u.needs_factor(),
             );
@@ -36,8 +65,10 @@ pub(crate) fn execute(units: &mut [Unit], map: &ArenaMap, tick: u32) {
         } else {
             u.route.clear();
         }
-        u.movement_multiplier = if u.position.distance(start) > 1e-9 {
-            u.position.distance(start) / (crate::definitions::SPEED * crate::definitions::STEP)
+        let dist = u.position.distance(start);
+        *has_moved = u.position != start;
+        u.movement_multiplier = if dist > 1e-9 {
+            dist / (crate::definitions::SPEED * crate::definitions::STEP)
         } else {
             0.0
         };

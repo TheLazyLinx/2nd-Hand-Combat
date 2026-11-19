@@ -145,6 +145,26 @@ pub fn editor_rules() -> EditorRules {
         max_obstacle_height: 100.0,
     }
 }
+pub(crate) struct WeaponSpec {
+    pub range: f64,
+    pub damage: f64,
+    pub hit_chance: f64,
+    pub ammo_item_id: &'static str,
+    pub cooldown: f64,
+}
+
+const RIFLE_SPEC: WeaponSpec = WeaponSpec {
+    range: RANGE,
+    damage: DAMAGE,
+    hit_chance: HIT_CHANCE,
+    ammo_item_id: "rifle-ammo",
+    cooldown: COOLDOWN,
+};
+
+pub(crate) fn weapon_spec(id: &str) -> Option<&'static WeaponSpec> {
+    (id == "rifle").then_some(&RIFLE_SPEC)
+}
+
 pub(crate) fn rifle() -> WeaponDefinition {
     WeaponDefinition {
         id: "rifle".into(),
@@ -154,9 +174,6 @@ pub(crate) fn rifle() -> WeaponDefinition {
         ammo_item_id: "rifle-ammo".into(),
         cooldown: COOLDOWN,
     }
-}
-pub(crate) fn weapon(id: &str) -> Option<WeaponDefinition> {
-    (id == "rifle").then(rifle)
 }
 fn rule(min: f64, max: f64, step: f64) -> Rule {
     Rule { min, max, step }
@@ -177,6 +194,8 @@ pub fn catalog() -> Catalog {
         .iter()
         .map(|preset| {
             let m = &preset.map;
+            let cache = crate::terrain::TerrainCache::without_neighbors(m);
+            let terrain = cache.view(m);
             (0..m.height)
                 .flat_map(|y| {
                     (0..m.width).map(move |x| {
@@ -188,7 +207,7 @@ pub fn catalog() -> Catalog {
                             surface: map::surface(m, p),
                             elevation: map::ground_height(m, p),
                             movement_multiplier: map::movement_multiplier(m, p, p),
-                            traversable: !map::blocked(m, p),
+                            traversable: !map::blocked_t(terrain, p),
                         }
                     })
                 })

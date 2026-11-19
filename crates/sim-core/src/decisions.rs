@@ -1,4 +1,11 @@
-use crate::{map, navigation, types::*, unit::Unit};
+//! Tactical doctrine evaluation: maps immutable perceptions and memory to movement intentions.
+//!
+//! Uses `Terrain` and reusable `SearchScratch` with unified `map::exposure_t` queries.
+
+use crate::{map, navigation, terrain::Terrain, types::*, unit::Unit};
+
+#[cfg(test)]
+use crate::terrain::TerrainCache;
 
 pub(crate) struct DecisionInput<'a> {
     pub unit: &'a Unit,
@@ -15,7 +22,20 @@ pub(crate) struct Decision {
     pub route: Option<navigation::Route>,
 }
 
+#[cfg(test)]
 pub(crate) fn decide(input: &DecisionInput<'_>, map: &ArenaMap, faction_index: usize) -> Decision {
+    let cache = TerrainCache::new(map);
+    let mut scratch = navigation::SearchScratch::new(cache.width, cache.height);
+    decide_with(input, cache.view(map), &mut scratch, faction_index)
+}
+
+pub(crate) fn decide_with(
+    input: &DecisionInput<'_>,
+    terrain: Terrain<'_>,
+    scratch: &mut navigation::SearchScratch,
+    faction_index: usize,
+) -> Decision {
+    let map = terrain.map;
     let me = input.unit;
     let threat = input
         .visible_enemy
@@ -43,7 +63,7 @@ pub(crate) fn decide(input: &DecisionInput<'_>, map: &ArenaMap, faction_index: u
             let exposure = threats
                 .iter()
                 .copied()
-                .map(|enemy| map::exposure(map, enemy, p, revealed))
+                .map(|enemy| map::exposure_t(terrain, enemy, p, revealed))
                 .fold(0.0_f64, f64::max);
             let nearest = threats
                 .iter()
@@ -81,13 +101,13 @@ pub(crate) fn decide(input: &DecisionInput<'_>, map: &ArenaMap, faction_index: u
             .chain(input.allies.iter().copied())
             .filter(|p| me.position.distance(*p) <= 5.0)
             .collect();
-        let search = navigation::Search::for_targets(
-            map,
+        scratch.run_dijkstra(
+            terrain,
             me.position,
             threats,
             preference,
             revealed,
-            &targets,
+            Some(&targets),
         );
         let mut best: Option<(Point, f64, f64, f64, bool)> = None;
         let cells = (0..map.height).flat_map(|y| {
@@ -100,7 +120,7 @@ pub(crate) fn decide(input: &DecisionInput<'_>, map: &ArenaMap, faction_index: u
             if me.position.distance(p) > 5.0 {
                 continue;
             }
-            let Some(cost) = search.cost(p) else {
+            let Some(cost) = scratch.cost(p) else {
                 continue;
             };
             let (protection, distance) = safety(p);
@@ -126,7 +146,7 @@ pub(crate) fn decide(input: &DecisionInput<'_>, map: &ArenaMap, faction_index: u
             }
         }
         if let Some((goal, _, _, _, _)) = best {
-            let route = search.route_with_threats(map, goal, threats, preference);
+            let route = scratch.route_with_threats(terrain, goal, threats, preference);
             return decision(
                 Behavior::FallingBack,
                 Some(goal),
@@ -145,7 +165,7 @@ pub(crate) fn decide(input: &DecisionInput<'_>, map: &ArenaMap, faction_index: u
                 x: me.position.x + (enemy.x - me.position.x) * ratio,
                 y: me.position.y + (enemy.y - me.position.y) * ratio,
             };
-            if map::travel_time(map, me.position, desired).is_some() {
+            if map::travel_time_t(terrain, me.position, desired).is_some() {
                 return decision(
                     Behavior::Advancing,
                     Some(desired),
@@ -154,8 +174,7 @@ pub(crate) fn decide(input: &DecisionInput<'_>, map: &ArenaMap, faction_index: u
                     None,
                 );
             }
-            let search =
-                navigation::Search::with_threats(map, me.position, threats, preference, revealed);
+            scratch.run_dijkstra(terrain, me.position, threats, preference, revealed, None);
             let mut best: Option<(Point, f64, f64)> = None;
             for y in 0..map.height {
                 for x in 0..map.width {
@@ -163,12 +182,11 @@ pub(crate) fn decide(input: &DecisionInput<'_>, map: &ArenaMap, faction_index: u
                         x: x as f64 + 0.5,
                         y: y as f64 + 0.5,
                     };
-                    let Some(cost) = search.cost(p) else {
+                    let Some(cost) = scratch.cost(p) else {
                         continue;
                     };
                     if p.distance(enemy) > me.placement.doctrine.engagement_distance
-                        || !map::detectable(map, p, enemy, input.visible_enemy_revealed)
-                        || map::shot_fraction(map, p, enemy) <= 0.0
+                        || map::exposure_t(terrain, p, enemy, input.visible_enemy_revealed) <= 0.0
                     {
                         continue;
                     }
@@ -186,7 +204,7 @@ pub(crate) fn decide(input: &DecisionInput<'_>, map: &ArenaMap, faction_index: u
                     Some(goal),
                     None,
                     me.patrol_index,
-                    Some(search.route_with_threats(map, goal, threats, preference)),
+                    Some(scratch.route_with_threats(terrain, goal, threats, preference)),
                 );
             }
             return decision(Behavior::Engaging, None, None, me.patrol_index, None);
@@ -196,16 +214,10 @@ pub(crate) fn decide(input: &DecisionInput<'_>, map: &ArenaMap, faction_index: u
                 .iter()
                 .copied()
                 .map(|enemy| match me.placement.doctrine.position_preference {
-                    PositionPreference::Balanced => {
-                        if map::detectable(map, enemy, p, revealed) {
-                            map::shot_fraction(map, enemy, p)
-                        } else {
-                            0.0
-                        }
-                    }
-                    PositionPreference::Cover => map::shot_fraction(map, enemy, p),
+                    PositionPreference::Balanced => map::exposure_t(terrain, enemy, p, revealed),
+                    PositionPreference::Cover => map::shot_fraction_t(terrain, enemy, p),
                     PositionPreference::Concealment => {
-                        1.0 / (1.0 + map::spotting_cost(map, enemy, p))
+                        1.0 / (1.0 + map::spotting_cost_t(terrain, enemy, p))
                     }
                 })
                 .fold(0.0_f64, f64::max)
@@ -215,8 +227,7 @@ pub(crate) fn decide(input: &DecisionInput<'_>, map: &ArenaMap, faction_index: u
             if me.behavior == Behavior::Advancing
                 && me.position.distance(goal) > 0.2
                 && goal.distance(enemy) <= me.placement.doctrine.engagement_distance
-                && map::detectable(map, goal, enemy, input.visible_enemy_revealed)
-                && map::shot_fraction(map, goal, enemy) > 0.0
+                && map::exposure_t(terrain, goal, enemy, input.visible_enemy_revealed) > 0.0
                 && score(goal) <= current + 0.01
             {
                 return decision(Behavior::Advancing, Some(goal), None, me.patrol_index, None);
@@ -231,8 +242,7 @@ pub(crate) fn decide(input: &DecisionInput<'_>, map: &ArenaMap, faction_index: u
                 };
                 if me.position.distance(p) > 3.0
                     || p.distance(enemy) > me.placement.doctrine.engagement_distance
-                    || !map::detectable(map, p, enemy, input.visible_enemy_revealed)
-                    || map::shot_fraction(map, p, enemy) <= 0.0
+                    || map::exposure_t(terrain, p, enemy, input.visible_enemy_revealed) <= 0.0
                 {
                     continue;
                 }
@@ -247,17 +257,17 @@ pub(crate) fn decide(input: &DecisionInput<'_>, map: &ArenaMap, faction_index: u
             return decision(Behavior::Engaging, None, None, me.patrol_index, None);
         }
         let targets: Vec<_> = candidates.iter().map(|(p, _)| *p).collect();
-        let search = navigation::Search::for_targets(
-            map,
+        scratch.run_dijkstra(
+            terrain,
             me.position,
             threats,
             preference,
             revealed,
-            &targets,
+            Some(&targets),
         );
         let mut best: Option<(Point, f64, f64)> = None;
         for (p, value) in candidates {
-            let Some(cost) = search.cost(p) else {
+            let Some(cost) = scratch.cost(p) else {
                 continue;
             };
             if best
@@ -273,14 +283,14 @@ pub(crate) fn decide(input: &DecisionInput<'_>, map: &ArenaMap, faction_index: u
                 Some(goal),
                 None,
                 me.patrol_index,
-                Some(search.route_with_threats(map, goal, threats, preference)),
+                Some(scratch.route_with_threats(terrain, goal, threats, preference)),
             );
         }
         return decision(Behavior::Engaging, None, None, me.patrol_index, None);
     }
     if let Some(memory) = &me.memory {
         if !memory.investigated {
-            if map::clear(map, me.position, memory.position) {
+            if map::clear_t(terrain, me.position, memory.position) {
                 return decision(
                     Behavior::Investigating,
                     Some(memory.position),
@@ -289,8 +299,7 @@ pub(crate) fn decide(input: &DecisionInput<'_>, map: &ArenaMap, faction_index: u
                     None,
                 );
             }
-            let search =
-                navigation::Search::with_threats(map, me.position, threats, preference, revealed);
+            scratch.run_dijkstra(terrain, me.position, threats, preference, revealed, None);
             let mut best: Option<(Point, f64)> = None;
             for y in 0..map.height {
                 for x in 0..map.width {
@@ -298,12 +307,10 @@ pub(crate) fn decide(input: &DecisionInput<'_>, map: &ArenaMap, faction_index: u
                         x: x as f64 + 0.5,
                         y: y as f64 + 0.5,
                     };
-                    let Some(cost) = search.cost(p) else {
+                    let Some(cost) = scratch.cost(p) else {
                         continue;
                     };
-                    if !map::detectable(map, p, memory.position, false)
-                        || map::shot_fraction(map, p, memory.position) <= 0.0
-                    {
+                    if map::exposure_t(terrain, p, memory.position, false) <= 0.0 {
                         continue;
                     }
                     if best.as_ref().is_none_or(|b| cost < b.1) {
@@ -317,7 +324,7 @@ pub(crate) fn decide(input: &DecisionInput<'_>, map: &ArenaMap, faction_index: u
                     Some(goal),
                     None,
                     me.patrol_index,
-                    Some(search.route_with_threats(map, goal, threats, preference)),
+                    Some(scratch.route_with_threats(terrain, goal, threats, preference)),
                 );
             }
             return decision(

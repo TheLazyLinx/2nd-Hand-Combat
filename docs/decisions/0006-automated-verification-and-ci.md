@@ -21,7 +21,7 @@ Enforce structural and quality invariants automatically through approved dev too
    - Enforce `sim-core` browser independence in `crates/sim-core/tests/boundaries.rs`.
 4. **Tiered verification commands.**
    - `npm run verify:fast` (run on every change): Rust fmt/clippy/tests, TS contract sync, web fmt/lint, boundary tests, privacy checks/tests, WASM + Vite build, `svelte-check`/`tsc`, and `@smoke` Playwright tests.
-   - `npm run verify` (run before merging and in CI): everything in `verify:fast`, plus `deny:rust`, `bench:rust:quick`, and the full Playwright suite (including `@stress` tests).
+   - `npm run verify` (run before merging and in CI): everything in `verify:fast`, plus `deny:rust`, `bench:rust`, and the full Playwright suite (including `@stress` tests).
 5. **Continuous integration.** Run `npm run verify` in `.github/workflows/verify.yml` using SHA-pinned GitHub Actions and SHA-256-verified tool binaries (`wasm-pack`, `cargo-deny`), keeping the existing `.github/workflows/privacy.yml` workflow intact.
 
 ## Consequences

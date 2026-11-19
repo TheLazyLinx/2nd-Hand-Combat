@@ -1,15 +1,19 @@
-use crate::{map, types::*, unit::Unit};
-#[derive(Clone)]
+//! Per-tick soldier action selection (medical, water, ration, grenade, rifle) in strict priority.
+
+use crate::{definitions::WeaponSpec, map, terrain::Terrain, types::*, unit::Unit};
+
+#[derive(Clone, Copy)]
 pub(crate) enum Action {
     Medical,
     Water,
     Ration,
     Grenade(usize),
-    Rifle(usize, f64, WeaponDefinition),
+    Rifle(usize, f64, &'static WeaponSpec),
 }
+
 pub(crate) fn select(
     units: &[Unit],
-    map: &ArenaMap,
+    terrain: Terrain<'_>,
     tick: u32,
     observations: &[Vec<usize>],
 ) -> Vec<Option<Action>> {
@@ -60,7 +64,7 @@ pub(crate) fn select(
                 for &j in &observations[i] {
                     let target = units[j].position;
                     if u.position.distance(target) > grenade.max_distance
-                        || !map::clear(map, u.position, target)
+                        || !map::clear_t(terrain, u.position, target)
                         || units.iter().any(|ally| {
                             ally.hp > 0.0
                                 && ally.placement.faction == u.placement.faction
@@ -74,7 +78,7 @@ pub(crate) fn select(
                         .iter()
                         .filter(|&&k| {
                             units[k].position.distance(target) <= crate::consumables::BLAST_RADIUS
-                                && map::visible(map, target, units[k].position, 0.1, 1.0)
+                                && map::visible_t(terrain, target, units[k].position, 0.1, 1.0)
                         })
                         .count();
                     if grenade.policy != GrenadePolicy::Clusters
@@ -84,11 +88,11 @@ pub(crate) fn select(
                     }
                 }
             }
-            let weapon = u.inventory.held_weapon()?;
+            let weapon = u.inventory.held_weapon_spec()?;
             if !matches!(
                 u.behavior,
                 Behavior::Engaging | Behavior::FallingBack | Behavior::Defending
-            ) || u.inventory.count(&weapon.ammo_item_id) == 0
+            ) || u.inventory.count(weapon.ammo_item_id) == 0
             {
                 return None;
             }
@@ -96,8 +100,8 @@ pub(crate) fn select(
             if u.position.distance(units[j].position) > weapon.range {
                 return None;
             }
-            let exposure = map::exposure(
-                map,
+            let exposure = map::exposure_t(
+                terrain,
                 u.position,
                 units[j].position,
                 tick < units[j].revealed_until,

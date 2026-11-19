@@ -13,6 +13,7 @@ mod oracles;
 mod perception;
 mod results;
 mod sustainment;
+mod terrain;
 mod types;
 mod unit;
 mod validation;
